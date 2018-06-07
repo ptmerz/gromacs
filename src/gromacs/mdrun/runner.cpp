@@ -102,6 +102,7 @@
 #include "gromacs/mdrun/logging.h"
 #include "gromacs/mdrun/multisim.h"
 #include "gromacs/mdrun/simulationcontext.h"
+#include "gromacs/mdrunutility/accumulateglobals.h"
 #include "gromacs/mdrunutility/mdmodules.h"
 #include "gromacs/mdrunutility/threadaffinity.h"
 #include "gromacs/mdtypes/commrec.h"
@@ -1389,6 +1390,8 @@ int Mdrunner::mdrunner()
                             fr->cginfo_mb);
         }
 
+        auto accumulateGlobalsBuilder = std::make_unique<AccumulateGlobalsBuilder>();
+
         // TODO This is not the right place to manage the lifetime of
         // this data structure, but currently it's the easiest way to
         // make it work. Later, it should probably be made/updated
@@ -1414,6 +1417,7 @@ int Mdrunner::mdrunner()
             &ppForceWorkload,
             replExParams,
             membed,
+            accumulateGlobalsBuilder.get(),
             walltime_accounting,
             std::move(stopHandlerBuilder_)
         };

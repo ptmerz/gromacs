@@ -100,6 +100,7 @@
 #include "gromacs/mdlib/update.h"
 #include "gromacs/mdlib/vcm.h"
 #include "gromacs/mdlib/vsite.h"
+#include "gromacs/mdrunutility/accumulateglobals.h"
 #include "gromacs/mdtypes/awh_history.h"
 #include "gromacs/mdtypes/awh_params.h"
 #include "gromacs/mdtypes/commrec.h"
@@ -374,6 +375,11 @@ void gmx::Integrator::do_rerun()
         doFreeEnergyPerturbation = true;
     }
 
+    // This must be prepared before the first stage of global
+    // communication, and also before the first client module code
+    // that needs it.
+    AccumulateGlobals accumulateGlobals = accumulateGlobalsBuilder_->build();
+
     {
         int    cglo_flags = (CGLO_INITIALIZATION | CGLO_GSTAT |
                              (shouldCheckNumberOfBondedInteractions ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0));
@@ -382,6 +388,7 @@ void gmx::Integrator::do_rerun()
         compute_globals(fplog, gstat, cr, ir, fr, ekind, state, mdatoms, nrnb, vcm,
                         nullptr, enerd, force_vir, shake_vir, total_vir, pres, mu_tot,
                         constr, &nullSignaller, state->box,
+                        &accumulateGlobals,
                         &totalNumberOfBondedInteractions, &bSumEkinhOld, cglo_flags);
     }
     checkNumberOfBondedInteractions(mdlog, cr, totalNumberOfBondedInteractions,
@@ -632,6 +639,7 @@ void gmx::Integrator::do_rerun()
                             wcycle, enerd, force_vir, shake_vir, total_vir, pres, mu_tot,
                             constr, &signaller,
                             state->box,
+                            &accumulateGlobals,
                             &totalNumberOfBondedInteractions, &bSumEkinhOld,
                             CGLO_GSTAT | CGLO_ENERGY
                             | (shouldCheckNumberOfBondedInteractions ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
