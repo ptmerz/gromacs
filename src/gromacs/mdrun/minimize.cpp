@@ -1058,7 +1058,7 @@ namespace gmx
 {
 
 void
-Integrator::do_cg()
+legacy::Integrator::do_cg()
 {
     const char        *CG = "Polak-Ribiere Conjugate Gradients";
 
@@ -1691,7 +1691,7 @@ Integrator::do_cg()
 
 
 void
-Integrator::do_lbfgs()
+legacy::Integrator::do_lbfgs()
 {
     static const char *LBFGS = "Low-Memory BFGS Minimizer";
     em_state_t         ems;
@@ -2428,7 +2428,7 @@ Integrator::do_lbfgs()
 }
 
 void
-Integrator::do_steep()
+legacy::Integrator::do_steep()
 {
     const char       *SD  = "Steepest Descents";
     gmx_localtop_t    top;
@@ -2677,7 +2677,7 @@ Integrator::do_steep()
 }
 
 void
-Integrator::do_nm()
+legacy::Integrator::do_nm()
 {
     const char          *NM = "Normal Mode Analysis";
     int                  nnodes, node;

@@ -49,6 +49,9 @@
 namespace gmx
 {
 
+namespace legacy
+{
+
 //! \brief Run the correct integrator function.
 void Integrator::run(unsigned int ei, bool doRerun)
 {
@@ -108,5 +111,7 @@ void Integrator::run(unsigned int ei, bool doRerun)
             GMX_THROW(APIError("Non existing integrator selected"));
     }
 }
+
+}  // namespace legacy
 
 }  // namespace gmx

@@ -186,7 +186,7 @@ static void prepareRerunState(const t_trxframe  &rerunFrame,
     }
 }
 
-void gmx::Integrator::do_rerun()
+void gmx::legacy::Integrator::do_rerun()
 {
     // TODO Historically, the EM and MD "integrators" used different
     // names for the t_inputrec *parameter, but these must have the

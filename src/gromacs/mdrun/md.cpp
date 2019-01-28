@@ -144,7 +144,7 @@
 
 using gmx::SimulationSignaller;
 
-void gmx::Integrator::do_md()
+void gmx::legacy::Integrator::do_md()
 {
     // TODO Historically, the EM and MD "integrators" used different
     // names for the t_inputrec *parameter, but these must have the

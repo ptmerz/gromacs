@@ -1401,7 +1401,7 @@ int Mdrunner::mdrunner()
 
         GMX_ASSERT(stopHandlerBuilder_, "Runner must provide StopHandlerBuilder to integrator.");
         /* Now do whatever the user wants us to do (how flexible...) */
-        Integrator integrator {
+        legacy::Integrator integrator {
             fplog, cr, ms, mdlog, static_cast<int>(filenames.size()), filenames.data(),
             oenv,
             mdrunOptions,

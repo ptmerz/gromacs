@@ -132,7 +132,7 @@ namespace gmx
 {
 
 void
-Integrator::do_tpi()
+legacy::Integrator::do_tpi()
 {
     gmx_localtop_t          top;
     gmx_groups_t           *groups;

@@ -47,8 +47,13 @@
 namespace gmx
 {
 
+namespace legacy
+{
+
 //! MD simulations
 integrator_t do_md;
+
+}      // namespace legacy
 
 }      // namespace gmx
 

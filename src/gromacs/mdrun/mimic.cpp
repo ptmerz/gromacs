@@ -140,7 +140,7 @@
 
 using gmx::SimulationSignaller;
 
-void gmx::Integrator::do_mimic()
+void gmx::legacy::Integrator::do_mimic()
 {
     t_inputrec              *ir   = inputrec;
     int64_t                  step, step_rel;

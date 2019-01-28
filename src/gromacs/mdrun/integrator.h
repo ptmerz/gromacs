@@ -81,6 +81,9 @@ class MDLogger;
 class MDAtoms;
 class StopHandlerBuilder;
 
+namespace legacy
+{
+
 //! Function type for integrator code.
 using IntegratorFunctionType = void();
 
@@ -189,6 +192,8 @@ struct Integrator
     //! We only intend to construct such objects with an initializer list.
     Integrator() = delete;
 };
+
+}      // namespace legacy
 
 }      // namespace gmx
 
