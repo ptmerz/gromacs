@@ -43,6 +43,7 @@
 
 #include "integrator.h"
 
+#include "gromacs/mdlib/stophandler.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/exceptions.h"
 
@@ -53,7 +54,7 @@ namespace legacy
 {
 
 //! \brief Run the correct integrator function.
-void Integrator::run(unsigned int ei, bool doRerun)
+void Integrator::run()
 {
     switch (ei)
     {
@@ -111,6 +112,69 @@ void Integrator::run(unsigned int ei, bool doRerun)
             GMX_THROW(APIError("Non existing integrator selected"));
     }
 }
+
+Integrator::Integrator(
+        FILE                               *fplog,
+        t_commrec                          *cr,
+        const gmx_multisim_t               *ms,
+        const MDLogger                     &mdlog,
+        int                                 nfile,
+        const t_filenm                     *fnm,
+        const gmx_output_env_t             *oenv,
+        const MdrunOptions                 &mdrunOptions,
+        gmx_vsite_t                        *vsite,
+        Constraints                        *constr,
+        gmx_enfrot                         *enforcedRotation,
+        BoxDeformation                     *deform,
+        IMDOutputProvider                  *outputProvider,
+        t_inputrec                         *inputrec,
+        gmx_mtop_t                         *top_global,
+        t_fcdata                           *fcd,
+        t_state                            *state_global,
+        ObservablesHistory                 *observablesHistory,
+        MDAtoms                            *mdAtoms,
+        t_nrnb                             *nrnb,
+        gmx_wallcycle                      *wcycle,
+        t_forcerec                         *fr,
+        PpForceWorkload                    *ppForceWorkload,
+        const ReplicaExchangeParameters    &replExParams,
+        gmx_membed_t                       *membed,
+        AccumulateGlobalsBuilder           *accumulateGlobalsBuilder,
+        gmx_walltime_accounting            *walltime_accounting,
+        std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
+        int                                 ei,
+        bool                                doRerun) :
+    fplog(fplog),
+    cr(cr),
+    ms(ms),
+    mdlog(mdlog),
+    nfile(nfile),
+    fnm(fnm),
+    oenv(oenv),
+    mdrunOptions(mdrunOptions),
+    vsite(vsite),
+    constr(constr),
+    enforcedRotation(enforcedRotation),
+    deform(deform),
+    outputProvider(outputProvider),
+    inputrec(inputrec),
+    top_global(top_global),
+    fcd(fcd),
+    state_global(state_global),
+    observablesHistory(observablesHistory),
+    mdAtoms(mdAtoms),
+    nrnb(nrnb),
+    wcycle(wcycle),
+    fr(fr),
+    ppForceWorkload(ppForceWorkload),
+    replExParams(replExParams),
+    membed(membed),
+    accumulateGlobalsBuilder_(accumulateGlobalsBuilder),
+    walltime_accounting(walltime_accounting),
+    stopHandlerBuilder(std::move(stopHandlerBuilder)),
+    ei(ei),
+    doRerun(doRerun)
+{}
 
 }  // namespace legacy
 

@@ -1401,27 +1401,28 @@ int Mdrunner::mdrunner()
 
         GMX_ASSERT(stopHandlerBuilder_, "Runner must provide StopHandlerBuilder to integrator.");
         /* Now do whatever the user wants us to do (how flexible...) */
-        legacy::Integrator integrator {
-            fplog, cr, ms, mdlog, static_cast<int>(filenames.size()), filenames.data(),
-            oenv,
-            mdrunOptions,
-            vsite.get(), constr.get(),
-            enforcedRotation ? enforcedRotation->getLegacyEnfrot() : nullptr,
-            deform.get(),
-            mdModules->outputProvider(),
-            inputrec, &mtop,
-            fcd,
-            globalState.get(),
-            &observablesHistory,
-            mdAtoms.get(), nrnb, wcycle, fr,
-            &ppForceWorkload,
-            replExParams,
-            membed,
-            accumulateGlobalsBuilder.get(),
-            walltime_accounting,
-            std::move(stopHandlerBuilder_)
-        };
-        integrator.run(inputrec->eI, doRerun);
+        std::unique_ptr<gmx::Integrator> integrator = std::make_unique<gmx::legacy::Integrator>(
+                    fplog, cr, ms, mdlog, static_cast<int>(filenames.size()), filenames.data(),
+                    oenv,
+                    mdrunOptions,
+                    vsite.get(), constr.get(),
+                    enforcedRotation ? enforcedRotation->getLegacyEnfrot() : nullptr,
+                    deform.get(),
+                    mdModules->outputProvider(),
+                    inputrec, &mtop,
+                    fcd,
+                    globalState.get(),
+                    &observablesHistory,
+                    mdAtoms.get(), nrnb, wcycle, fr,
+                    &ppForceWorkload,
+                    replExParams,
+                    membed,
+                    accumulateGlobalsBuilder.get(),
+                    walltime_accounting,
+                    std::move(stopHandlerBuilder_),
+                    inputrec->eI,
+                    doRerun);
+        integrator->run();
 
         if (inputrec->bPull)
         {

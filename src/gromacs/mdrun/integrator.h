@@ -71,15 +71,21 @@ class t_state;
 
 namespace gmx
 {
-
 class AccumulateGlobalsBuilder;
 class BoxDeformation;
 class Constraints;
-class PpForceWorkload;
 class IMDOutputProvider;
 class MDLogger;
 class MDAtoms;
+class PpForceWorkload;
 class StopHandlerBuilder;
+
+class Integrator
+{
+    public:
+        virtual void run()    = 0;
+        virtual ~Integrator() = default;
+};
 
 namespace legacy
 {
@@ -112,7 +118,7 @@ using IntegratorFunctionType = void();
  * so that is perfect. To ensure this remains true even if we would
  * remove those members, we explicitly delete this constructor.
  * Other constructors, copies and moves are OK. */
-struct Integrator
+struct Integrator : public gmx::Integrator
 {
     //! Handles logging.
     FILE                               *fplog;
@@ -170,6 +176,10 @@ struct Integrator
     gmx_walltime_accounting            *walltime_accounting;
     //! Registers stop conditions
     std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder;
+    //! The mdp integrator field
+    const int                           ei;
+    //! Whether we are doing a rerun
+    const bool                          doRerun;
     //! Implements the normal MD integrators.
     IntegratorFunctionType              do_md;
     //! Implements the rerun functionality.
@@ -188,9 +198,40 @@ struct Integrator
     IntegratorFunctionType              do_mimic;
     /*! \brief Function to run the correct IntegratorFunctionType,
      * based on the .mdp integrator field. */
-    void run(unsigned int ei, bool doRerun);
-    //! We only intend to construct such objects with an initializer list.
-    Integrator() = delete;
+    void run() override;
+    //! Derived class don't work with aggregate initialization
+    Integrator(
+            FILE                               *fplog,
+            t_commrec                          *cr,
+            const gmx_multisim_t               *ms,
+            const MDLogger                     &mdlog,
+            int                                 nfile,
+            const t_filenm                     *fnm,
+            const gmx_output_env_t             *oenv,
+            const MdrunOptions                 &mdrunOptions,
+            gmx_vsite_t                        *vsite,
+            Constraints                        *constr,
+            gmx_enfrot                         *enforcedRotation,
+            BoxDeformation                     *deform,
+            IMDOutputProvider                  *outputProvider,
+            t_inputrec                         *inputrec,
+            gmx_mtop_t                         *top_global,
+            t_fcdata                           *fcd,
+            t_state                            *state_global,
+            ObservablesHistory                 *observablesHistory,
+            MDAtoms                            *mdAtoms,
+            t_nrnb                             *nrnb,
+            gmx_wallcycle                      *wcycle,
+            t_forcerec                         *fr,
+            PpForceWorkload                    *ppForceWorkload,
+            const ReplicaExchangeParameters    &replExParams,
+            gmx_membed_t                       *membed,
+            AccumulateGlobalsBuilder           *accumulateGlobalsBuilder,
+            gmx_walltime_accounting            *walltime_accounting,
+            std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
+            int                                 ei,
+            bool                                doRerun
+            );
 };
 
 }      // namespace legacy
