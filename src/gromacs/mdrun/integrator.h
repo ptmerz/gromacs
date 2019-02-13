@@ -182,6 +182,8 @@ struct Integrator : public gmx::Integrator
     const bool                          doRerun;
     //! Implements the normal MD integrators.
     IntegratorFunctionType              do_md;
+    //! Implements the normal MD integrators (simple version).
+    IntegratorFunctionType              do_simple_md;
     //! Implements the rerun functionality.
     IntegratorFunctionType              do_rerun;
     //! Implements steepest descent EM.

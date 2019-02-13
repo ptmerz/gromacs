@@ -44,6 +44,7 @@
 #include "integrator.h"
 
 #include "gromacs/mdlib/stophandler.h"
+#include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/exceptions.h"
 
@@ -70,6 +71,10 @@ void Integrator::run()
             if (doRerun)
             {
                 do_rerun();
+            }
+            else if (inputrec->userint1 == 99887766)
+            {
+                do_simple_md();
             }
             else
             {
