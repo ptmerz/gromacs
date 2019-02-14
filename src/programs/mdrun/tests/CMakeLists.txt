@@ -52,6 +52,7 @@ gmx_add_gtest_executable(
     compressed_x_output.cpp
     grompp.cpp
     initialconstraints.cpp
+    integrator.cpp
     interactiveMD.cpp
     pmetest.cpp
     swapcoords.cpp
