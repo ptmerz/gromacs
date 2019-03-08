@@ -1625,6 +1625,17 @@ void gmx::legacy::Integrator::do_simple_md()
                 LastStepCallback([&bLastStep](){bLastStep = true; }));
     stepManager->registerLastStepCallback(std::move(lastStepCallback));
 
+    /*
+     * Build neighbor search signaller
+     */
+    auto neighborSearchSignaller = std::make_unique<NeighborSearchSignaller>(
+                stepManager->getStepAccessor(), inputrec->nstlist);
+    // Later, NS signaller will inform elements directly that a NS step is coming.
+    // Currently, define a lambda to take care of that
+    auto nsCallback = std::make_unique<NeighborSearchSignallerCallback>(
+                NeighborSearchSignallerCallback([&bNS](){bNS = true; }));
+    neighborSearchSignaller->registerCallback(std::move(nsCallback));
+
     const bool bRerunMD      = false;
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
 
@@ -1884,6 +1895,10 @@ void gmx::legacy::Integrator::do_simple_md()
     auto stepManagerStep     = stepManager->registerRun();
     auto stepManagerTeardown = stepManager->registerTeardown();
 
+    auto neighborSearchSignallerSetup    = neighborSearchSignaller->registerSetup();
+    auto neighborSearchSignallerRun      = neighborSearchSignaller->registerRun();
+    auto neighborSearchSignallerTeardown = neighborSearchSignaller->registerTeardown();
+
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
@@ -1904,14 +1919,20 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*stepManagerSetup)();
     }
+    if (neighborSearchSignallerSetup)
+    {
+        (*neighborSearchSignallerSetup)();
+    }
 
     // With the step manager, we will be setting last step at the end of the step,
     // and want to actually do a last step before stopping.
     auto previousbLastStep = bLastStep;
     while (!previousbLastStep)
     {
-        /* Determine whether or not to do Neighbour Searching */
-        bNS = (bFirstStep || (ir->nstlist > 0  && step % ir->nstlist == 0));
+        if (neighborSearchSignallerRun)
+        {
+            (*neighborSearchSignallerRun)();
+        }
 
         wallcycle_start(wcycle, ewcSTEP);
 
@@ -2272,6 +2293,9 @@ void gmx::legacy::Integrator::do_simple_md()
             dd_cycles_add(cr->dd, cycles, ddCyclStep);
         }
 
+        // Reset flags
+        bNS = false;
+
         previousbLastStep = bLastStep;
         if (stepManagerStep)
         {
@@ -2286,6 +2310,11 @@ void gmx::legacy::Integrator::do_simple_md()
     if (stepManagerTeardown)
     {
         (*stepManagerTeardown)();
+    }
+
+    if (neighborSearchSignallerTeardown)
+    {
+        (*neighborSearchSignallerTeardown)();
     }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that

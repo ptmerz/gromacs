@@ -40,6 +40,7 @@
 #include "gromacs/domdec/dlbtiming.h"
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/utility/arrayref.h"
 
 struct gmx_edsam;
@@ -166,5 +167,42 @@ void do_force_lowlevel(t_forcerec   *fr,
                        int          flags,
                        float        *cycles_pme);
 /* Call all the force routines */
+
+namespace gmx
+{
+/*! \internal
+ * \brief Element signalling a neighbor search step
+ *
+ * This element monitors the current step, and informs its clients via callbacks
+ * when a neighbor-searching step is happening.
+ */
+class NeighborSearchSignaller : public IIntegratorElement
+{
+    public:
+        //! Constructor
+        explicit NeighborSearchSignaller(StepAccessorPtr stepAccessor, int nstlist);
+
+        //! IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        //! Allows clients to register a neighbor-search step callback
+        void registerCallback(NeighborSearchSignallerCallbackPtr callback);
+
+    private:
+        StepAccessorPtr stepAccessor_;
+        const int       nstlist_;
+
+        std::vector<NeighborSearchSignallerCallbackPtr> callbacks_;
+
+        //! Informs clients that first step is callback by default
+        void setup();
+        /* Queries the current step via the step accessor, and informs its clients
+         * if a neighbor search is going to happen this step.
+         */
+        void run();
+};
+}
 
 #endif

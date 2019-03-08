@@ -864,3 +864,65 @@ void reset_enerdata(gmx_enerdata_t *enerd)
     /* reset foreign energy data - separate function since we also call it elsewhere */
     reset_foreign_enerdata(enerd);
 }
+
+namespace gmx
+{
+
+NeighborSearchSignaller::NeighborSearchSignaller(StepAccessorPtr stepAccessor, int nstlist) :
+    stepAccessor_(std::move(stepAccessor)),
+    nstlist_(nstlist)
+{}
+
+//! Allows clients to register a neighbor-search step callback
+void NeighborSearchSignaller::registerCallback(NeighborSearchSignallerCallbackPtr callback)
+{
+    callbacks_.emplace_back(std::move(callback));
+}
+
+//! Informs clients that first step is callback by default
+void NeighborSearchSignaller::setup()
+{
+    // first step is always NS step
+    for (const auto &callback : callbacks_)
+    {
+        (*callback)();
+    }
+}
+
+/* Queries the current step via the step accessor, and informs its clients
+ * if a neighbor search is going to happen this step.
+ */
+void NeighborSearchSignaller::run()
+{
+    auto step = (*stepAccessor_)();
+
+    if (nstlist_ > 0  && step % nstlist_ == 0)
+    {
+        for (const auto &callback : callbacks_)
+        {
+            (*callback)();
+        }
+    }
+}
+
+ElementFunctionTypePtr NeighborSearchSignaller::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&NeighborSearchSignaller::setup, this));
+}
+
+ElementFunctionTypePtr NeighborSearchSignaller::registerRun()
+{
+    if (nstlist_ > 0)
+    {
+        return std::make_unique<ElementFunctionType>(
+                std::bind(&NeighborSearchSignaller::run, this));
+    }
+    return nullptr;
+}
+
+ElementFunctionTypePtr NeighborSearchSignaller::registerTeardown()
+{
+    return nullptr;
+}
+}  // namespace gmx

@@ -88,6 +88,18 @@ class ILastStepClient
         virtual LastStepCallbackPtr getLastStepCallback() = 0;
 };
 
+//! Defines a callback for neighbor searching steps
+typedef std::function<void()> NeighborSearchSignallerCallback;
+typedef std::unique_ptr<NeighborSearchSignallerCallback> NeighborSearchSignallerCallbackPtr;
+
+//! Interface defining a client of the neighbor search signaller
+class INeighborSearchSignallerClient
+{
+    public:
+        //! Client returns a callback function pointer
+        virtual NeighborSearchSignallerCallbackPtr getNSCallback() = 0;
+};
+
 }      // namespace gmx
 
 #endif //GMX_MDRUN_INTEGRATORINTERFACES_H
