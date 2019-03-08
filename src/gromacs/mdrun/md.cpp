@@ -1636,6 +1636,18 @@ void gmx::legacy::Integrator::do_simple_md()
                 NeighborSearchSignallerCallback([&bNS](){bNS = true; }));
     neighborSearchSignaller->registerCallback(std::move(nsCallback));
 
+    /*
+     * Build logging signaller
+     */
+    auto logSignaller = std::make_unique<LoggingSignaller>(
+                stepManager->getStepAccessor(), inputrec->nstlog);
+    stepManager->registerLastStepCallback(logSignaller->getLastStepCallback());
+    // Later, NS signaller will inform elements directly that a NS step is coming.
+    // Currently, define a lambda to take care of that
+    auto logCallback = std::make_unique<LoggingSignallerCallback>(
+                LoggingSignallerCallback([&do_log](){do_log = true; }));
+    logSignaller->registerCallback(std::move(logCallback));
+
     const bool bRerunMD      = false;
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
 
@@ -1899,6 +1911,10 @@ void gmx::legacy::Integrator::do_simple_md()
     auto neighborSearchSignallerRun      = neighborSearchSignaller->registerRun();
     auto neighborSearchSignallerTeardown = neighborSearchSignaller->registerTeardown();
 
+    auto logSignallerSetup    = logSignaller->registerSetup();
+    auto logSignallerRun      = logSignaller->registerRun();
+    auto logSignallerTeardown = logSignaller->registerTeardown();
+
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
@@ -1923,6 +1939,10 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*neighborSearchSignallerSetup)();
     }
+    if (logSignallerSetup)
+    {
+        (*logSignallerSetup)();
+    }
 
     // With the step manager, we will be setting last step at the end of the step,
     // and want to actually do a last step before stopping.
@@ -1933,6 +1953,10 @@ void gmx::legacy::Integrator::do_simple_md()
         {
             (*neighborSearchSignallerRun)();
         }
+        if (logSignallerRun)
+        {
+            (*logSignallerRun)();
+        }
 
         wallcycle_start(wcycle, ewcSTEP);
 
@@ -1941,13 +1965,6 @@ void gmx::legacy::Integrator::do_simple_md()
 
         bLastStep = bLastStep || stopHandler->stoppingAfterCurrentStep(bNS);
 
-        /* do_log triggers energy and virial calculation. Because this leads
-         * to different code paths, forces can be different. Thus for exact
-         * continuation we should avoid extra log output.
-         * Note that the || bLastStep can result in non-exact continuation
-         * beyond the last step. But we don't consider that to be an issue.
-         */
-        do_log     = do_per_step(step, ir->nstlog) || bFirstStep || bLastStep;
         do_verbose = mdrunOptions.verbose &&
             (step % mdrunOptions.verboseStepPrintInterval == 0 || bFirstStep || bLastStep);
 
@@ -2294,7 +2311,8 @@ void gmx::legacy::Integrator::do_simple_md()
         }
 
         // Reset flags
-        bNS = false;
+        bNS    = false;
+        do_log = false;
 
         previousbLastStep = bLastStep;
         if (stepManagerStep)
@@ -2311,10 +2329,13 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*stepManagerTeardown)();
     }
-
     if (neighborSearchSignallerTeardown)
     {
         (*neighborSearchSignallerTeardown)();
+    }
+    if (logSignallerTeardown)
+    {
+        (*logSignallerTeardown)();
     }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that

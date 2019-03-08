@@ -44,9 +44,11 @@
 #ifndef GMX_UTILITY_LOGGER_H
 #define GMX_UTILITY_LOGGER_H
 
+#include <functional>
 #include <string>
 
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 
 namespace gmx
 {
@@ -227,6 +229,44 @@ class MDLogger
 #define GMX_LOG(logger) \
     if (::gmx::LogWriteHelper helper = ::gmx::LogWriteHelper(logger)) { } else \
         helper = ::gmx::LogEntryWriter()
+
+/*! \internal
+ * \brief Element signalling a logging step
+ *
+ * This element monitors the current step, and informs its clients via callbacks
+ * when a logging step is happening.
+ */
+class LoggingSignaller : public IIntegratorElement, public ILastStepClient
+{
+    public:
+        //! Constructor
+        explicit LoggingSignaller(StepAccessorPtr stepAccessor, int nstlog);
+
+        //! IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        //! Allows clients to register a logging step callback
+        void registerCallback(LoggingSignallerCallbackPtr callback);
+
+        //! Register callback to get informed about last step
+        LastStepCallbackPtr getLastStepCallback() override;
+
+    private:
+        StepAccessorPtr stepAccessor_;
+        const int       nstlog_;
+        bool            isLastStep_;
+
+        std::vector<LoggingSignallerCallbackPtr> callbacks_;
+
+        //! Informs clients that first step is a logging step (by default)
+        void setup();
+        /*! Queries the current step via the step accessor, and informs its clients
+         * if this is a logging step.
+         */
+        void run();
+};
 
 } // namespace gmx
 

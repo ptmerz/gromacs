@@ -38,6 +38,7 @@
 
 #include <cstdarg>
 
+#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/utility/stringutil.h"
 
 namespace gmx
@@ -78,7 +79,71 @@ MDLogger::MDLogger()
 MDLogger::MDLogger(ILogTarget *targets[LogLevelCount])
     : warning(getTarget(targets, LogLevel::Warning)),
       info(getTarget(targets, LogLevel::Info))
+{}
+
+//! Allows clients to register a logging step callback
+LoggingSignaller::LoggingSignaller(StepAccessorPtr stepAccessor, int nstlog) :
+    stepAccessor_(std::move(stepAccessor)),
+    nstlog_(nstlog),
+    isLastStep_(false)
+{}
+
+void LoggingSignaller::registerCallback(LoggingSignallerCallbackPtr callback)
 {
+    if (callback)
+    {
+        callbacks_.emplace_back(std::move(callback));
+    }
+}
+
+//! Informs clients that first step is a logging step (by default)
+void LoggingSignaller::setup()
+{
+    // first step is always logging step
+    for (const auto &callback : callbacks_)
+    {
+        (*callback)();
+    }
+}
+
+/*! Queries the current step via the step accessor, and informs its clients
+ * if this is a logging step.
+ */
+void LoggingSignaller::run()
+{
+    auto step = (*stepAccessor_)();
+
+    if (do_per_step(step, nstlog_) || isLastStep_)
+    {
+        for (const auto &callback : callbacks_)
+        {
+            (*callback)();
+        }
+    }
+}
+
+//! Register callback to get informed about last step
+LastStepCallbackPtr LoggingSignaller::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            [this](){this->isLastStep_ = true; });
+}
+
+ElementFunctionTypePtr LoggingSignaller::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&LoggingSignaller::setup, this));
+}
+
+ElementFunctionTypePtr LoggingSignaller::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&LoggingSignaller::run, this));
+}
+
+ElementFunctionTypePtr LoggingSignaller::registerTeardown()
+{
+    return nullptr;
 }
 
 } // namespace gmx

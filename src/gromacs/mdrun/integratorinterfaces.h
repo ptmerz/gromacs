@@ -100,6 +100,18 @@ class INeighborSearchSignallerClient
         virtual NeighborSearchSignallerCallbackPtr getNSCallback() = 0;
 };
 
+//! Defines a callback for logging steps
+typedef std::function<void()> LoggingSignallerCallback;
+typedef std::unique_ptr<LoggingSignallerCallback> LoggingSignallerCallbackPtr;
+
+//! Interface defining a client of the logging step signaller
+class ILoggingSignallerClient
+{
+    public:
+        //! Client returns a callback function pointer
+        virtual LoggingSignallerCallbackPtr getLoggingCallback() = 0;
+};
+
 }      // namespace gmx
 
 #endif //GMX_MDRUN_INTEGRATORINTERFACES_H
