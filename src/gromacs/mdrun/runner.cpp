@@ -1401,7 +1401,7 @@ int Mdrunner::mdrunner()
 
         GMX_ASSERT(stopHandlerBuilder_, "Runner must provide StopHandlerBuilder to integrator.");
         /* Now do whatever the user wants us to do (how flexible...) */
-        std::unique_ptr<gmx::Integrator> integrator = std::make_unique<gmx::legacy::Integrator>(
+        auto integratorBuilder = std::make_unique<IntegratorBuilder>(
                     fplog, cr, ms, mdlog, static_cast<int>(filenames.size()), filenames.data(),
                     oenv,
                     mdrunOptions,
@@ -1422,6 +1422,8 @@ int Mdrunner::mdrunner()
                     std::move(stopHandlerBuilder_),
                     inputrec->eI,
                     doRerun);
+
+        auto integrator = integratorBuilder->build();
         integrator->run();
 
         if (inputrec->bPull)

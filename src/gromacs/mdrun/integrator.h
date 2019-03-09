@@ -188,6 +188,106 @@ class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClien
         gmx_wallcycle           *wcycle_;
 };
 
+class IntegratorBuilder
+{
+    public:
+        IntegratorBuilder(
+            FILE                               *fplog,
+            t_commrec                          *cr,
+            const gmx_multisim_t               *ms,
+            const MDLogger                     &mdlog,
+            int                                 nfile,
+            const t_filenm                     *fnm,
+            const gmx_output_env_t             *oenv,
+            const MdrunOptions                 &mdrunOptions,
+            gmx_vsite_t                        *vsite,
+            Constraints                        *constr,
+            gmx_enfrot                         *enforcedRotation,
+            BoxDeformation                     *deform,
+            IMDOutputProvider                  *outputProvider,
+            t_inputrec                         *inputrec,
+            gmx_mtop_t                         *top_global,
+            t_fcdata                           *fcd,
+            t_state                            *state_global,
+            ObservablesHistory                 *observablesHistory,
+            MDAtoms                            *mdAtoms,
+            t_nrnb                             *nrnb,
+            gmx_wallcycle                      *wcycle,
+            t_forcerec                         *fr,
+            PpForceWorkload                    *ppForceWorkload,
+            const ReplicaExchangeParameters    &replExParams,
+            gmx_membed_t                       *membed,
+            AccumulateGlobalsBuilder           *accumulateGlobalsBuilder,
+            gmx_walltime_accounting            *walltime_accounting,
+            std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
+            int                                 ei,
+            bool                                doRerun);
+
+        std::unique_ptr<Integrator> build();
+
+    private:
+        //! Handles logging.
+        FILE                               *fplog_;
+        //! Handles communication.
+        t_commrec                          *cr_;
+        //! Coordinates multi-simulations.
+        const gmx_multisim_t               *ms_;
+        //! Handles logging.
+        const MDLogger                     &mdlog_;
+        //! Count of input file options.
+        int                                 nfile_;
+        //! Content of input file options.
+        const t_filenm                     *fnm_;
+        //! Handles writing text output.
+        const gmx_output_env_t             *oenv_;
+        //! Contains command-line options to mdrun.
+        const MdrunOptions                 &mdrunOptions_;
+        //! Handles virtual sites.
+        gmx_vsite_t                        *vsite_;
+        //! Handles constraints.
+        Constraints                        *constr_;
+        //! Handles enforced rotation.
+        gmx_enfrot                         *enforcedRotation_;
+        //! Handles box deformation.
+        BoxDeformation                     *deform_;
+        //! Handles writing output files.
+        IMDOutputProvider                  *outputProvider_;
+        //! Contains user input mdp options.
+        t_inputrec                         *inputrec_;
+        //! Full system topology.
+        gmx_mtop_t                         *top_global_;
+        //! Helper struct for force calculations.
+        t_fcdata                           *fcd_;
+        //! Full simulation state (only non-nullptr on master rank).
+        t_state                            *state_global_;
+        //! History of simulation observables.
+        ObservablesHistory                 *observablesHistory_;
+        //! Atom parameters for this domain.
+        MDAtoms                            *mdAtoms_;
+        //! Manages flop accounting.
+        t_nrnb                             *nrnb_;
+        //! Manages wall cycle accounting.
+        gmx_wallcycle                      *wcycle_;
+        //! Parameters for force calculations.
+        t_forcerec                         *fr_;
+        //! Schedule of force-calculation work each step for this task.
+        PpForceWorkload                    *ppForceWorkload_;
+        //! Parameters for replica exchange algorihtms.
+        const ReplicaExchangeParameters    &replExParams_;
+        //! Parameters for membrane embedding.
+        gmx_membed_t                       *membed_;
+        //! Builds an object that will accumulates globals for modules that require that.
+        AccumulateGlobalsBuilder           *accumulateGlobalsBuilder_;
+        //! Manages wall time accounting.
+        gmx_walltime_accounting            *walltime_accounting_;
+        //! Registers stop conditions
+        std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder_;
+        //! The mdp integrator field
+        const int                           ei_;
+        //! Whether we are doing a rerun
+        const bool                          doRerun_;
+};
+
 namespace legacy
 {
 

@@ -126,6 +126,79 @@ void SimpleStepManager::setup()
     }
 }
 
+IntegratorBuilder::IntegratorBuilder(
+        FILE                               *fplog,
+        t_commrec                          *cr,
+        const gmx_multisim_t               *ms,
+        const MDLogger                     &mdlog,
+        int                                 nfile,
+        const t_filenm                     *fnm,
+        const gmx_output_env_t             *oenv,
+        const MdrunOptions                 &mdrunOptions,
+        gmx_vsite_t                        *vsite,
+        Constraints                        *constr,
+        gmx_enfrot                         *enforcedRotation,
+        BoxDeformation                     *deform,
+        IMDOutputProvider                  *outputProvider,
+        t_inputrec                         *inputrec,
+        gmx_mtop_t                         *top_global,
+        t_fcdata                           *fcd,
+        t_state                            *state_global,
+        ObservablesHistory                 *observablesHistory,
+        MDAtoms                            *mdAtoms,
+        t_nrnb                             *nrnb,
+        gmx_wallcycle                      *wcycle,
+        t_forcerec                         *fr,
+        PpForceWorkload                    *ppForceWorkload,
+        const ReplicaExchangeParameters    &replExParams,
+        gmx_membed_t                       *membed,
+        AccumulateGlobalsBuilder           *accumulateGlobalsBuilder,
+        gmx_walltime_accounting            *walltime_accounting,
+        std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
+        int                                 ei,
+        bool                                doRerun) :
+    fplog_(fplog),
+    cr_(cr),
+    ms_(ms),
+    mdlog_(mdlog),
+    nfile_(nfile),
+    fnm_(fnm),
+    oenv_(oenv),
+    mdrunOptions_(mdrunOptions),
+    vsite_(vsite),
+    constr_(constr),
+    enforcedRotation_(enforcedRotation),
+    deform_(deform),
+    outputProvider_(outputProvider),
+    inputrec_(inputrec),
+    top_global_(top_global),
+    fcd_(fcd),
+    state_global_(state_global),
+    observablesHistory_(observablesHistory),
+    mdAtoms_(mdAtoms),
+    nrnb_(nrnb),
+    wcycle_(wcycle),
+    fr_(fr),
+    ppForceWorkload_(ppForceWorkload),
+    replExParams_(replExParams),
+    membed_(membed),
+    accumulateGlobalsBuilder_(accumulateGlobalsBuilder),
+    walltime_accounting_(walltime_accounting),
+    stopHandlerBuilder_(std::move(stopHandlerBuilder)),
+    ei_(ei),
+    doRerun_(doRerun)
+{}
+
+std::unique_ptr<Integrator> IntegratorBuilder::build()
+{
+    return std::make_unique<legacy::Integrator>(
+            fplog_, cr_, ms_, mdlog_, nfile_, fnm_, oenv_, mdrunOptions_, vsite_, constr_,
+            enforcedRotation_, deform_, outputProvider_, inputrec_, top_global_, fcd_, state_global_,
+            observablesHistory_, mdAtoms_, nrnb_, wcycle_, fr_, ppForceWorkload_, replExParams_,
+            membed_, accumulateGlobalsBuilder_, walltime_accounting_, std::move(stopHandlerBuilder_),
+            ei_, doRerun_);
+}
+
 namespace legacy
 {
 
