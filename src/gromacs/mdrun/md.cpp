@@ -1560,10 +1560,10 @@ void gmx::legacy::Integrator::do_simple_md()
     // t_inputrec is being replaced by IMdpOptionsProvider, so this
     // will go away eventually.
     t_inputrec             *ir   = inputrec;
-    gmx_bool                bGStat, bCalcVir, bCalcEnerStep, bCalcEner;
+    gmx_bool                bGStat, bCalcVir = false, bCalcEner = false;
     gmx_bool                bNS, bStopCM,
                             bFirstStep, bInitStep, bLastStep = FALSE;
-    gmx_bool                do_ene, do_log, do_verbose;
+    gmx_bool                do_ene = false, do_log, do_verbose;
     int                     force_flags, cglo_flags;
     tensor                  force_vir = {{0}}, shake_vir = {{0}}, total_vir = {{0}}, pres = {{0}};
     int                     i, m;
@@ -1647,6 +1647,27 @@ void gmx::legacy::Integrator::do_simple_md()
     auto logCallback = std::make_unique<LoggingSignallerCallback>(
                 LoggingSignallerCallback([&do_log](){do_log = true; }));
     logSignaller->registerCallback(std::move(logCallback));
+
+    /*
+     * Build energy signaller
+     */
+    auto energySignaller = std::make_unique<EnergySignaller>(
+                stepManager->getStepAccessor(), inputrec->nstcalcenergy, inputrec->nstenergy);
+    stepManager->registerLastStepCallback(energySignaller->getLastStepCallback());
+    logSignaller->registerCallback(energySignaller->getLoggingCallback());
+    // Later, the energy signaller will inform elements directly.
+    // Currently, define a lambda to take care of that
+    auto calcEnerCallback = std::make_unique<EnergySignallerCallback>(
+                EnergySignallerCallback([&bCalcEner](){bCalcEner = true; }));
+    auto calcVirCallback = std::make_unique<EnergySignallerCallback>(
+                EnergySignallerCallback([&bCalcVir](){bCalcVir = true; }));
+    auto writeEnerCallback = std::make_unique<EnergySignallerCallback>(
+                EnergySignallerCallback([&do_ene](){do_ene = true; }));
+    energySignaller->registerCallback(
+            std::move(calcEnerCallback),
+            std::move(calcVirCallback),
+            std::move(writeEnerCallback),
+            nullptr);
 
     const bool bRerunMD      = false;
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
@@ -1915,6 +1936,10 @@ void gmx::legacy::Integrator::do_simple_md()
     auto logSignallerRun      = logSignaller->registerRun();
     auto logSignallerTeardown = logSignaller->registerTeardown();
 
+    auto energySignallerSetup    = energySignaller->registerSetup();
+    auto energySignallerRun      = energySignaller->registerRun();
+    auto energySignallerTeardown = energySignaller->registerTeardown();
+
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
@@ -1943,6 +1968,10 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*logSignallerSetup)();
     }
+    if (energySignallerSetup)
+    {
+        (*energySignallerSetup)();
+    }
 
     // With the step manager, we will be setting last step at the end of the step,
     // and want to actually do a last step before stopping.
@@ -1956,6 +1985,10 @@ void gmx::legacy::Integrator::do_simple_md()
         if (logSignallerRun)
         {
             (*logSignallerRun)();
+        }
+        if (energySignallerRun)
+        {
+            (*energySignallerRun)();
         }
 
         wallcycle_start(wcycle, ewcSTEP);
@@ -1991,31 +2024,6 @@ void gmx::legacy::Integrator::do_simple_md()
             print_ebin_header(fplog, step, t); /* can we improve the information printed here? */
         }
         clear_mat(force_vir);
-
-        /* Determine the energy and pressure:
-         * at nstcalcenergy steps and at energy output steps (set below).
-         */
-        if (EI_VV(ir->eI) && (!bInitStep))
-        {
-            bCalcEnerStep = do_per_step(step, ir->nstcalcenergy);
-            bCalcVir      = bCalcEnerStep ||
-                (ir->epc != epcNO && (do_per_step(step, ir->nstpcouple) || do_per_step(step-1, ir->nstpcouple)));
-        }
-        else
-        {
-            bCalcEnerStep = do_per_step(step, ir->nstcalcenergy);
-            bCalcVir      = bCalcEnerStep ||
-                (ir->epc != epcNO && do_per_step(step, ir->nstpcouple));
-        }
-        bCalcEner = bCalcEnerStep;
-
-        do_ene = (do_per_step(step, ir->nstenergy) || bLastStep);
-
-        if (do_ene || do_log)
-        {
-            bCalcVir  = TRUE;
-            bCalcEner = TRUE;
-        }
 
         /* Do we need global communication ? */
         bGStat = (bCalcVir || bCalcEner || bStopCM ||
@@ -2261,7 +2269,8 @@ void gmx::legacy::Integrator::do_simple_md()
         {
             if (bCalcEner)
             {
-                bool bDoDHDL = false;
+                bool bDoDHDL       = false;
+                bool bCalcEnerStep = do_per_step(step, ir->nstcalcenergy);
                 energyOutput.addDataAtEnergyStep(bDoDHDL, bCalcEnerStep,
                                                  t, mdatoms->tmass, enerd, state,
                                                  ir->fepvals, ir->expandedvals, lastbox,
@@ -2311,8 +2320,11 @@ void gmx::legacy::Integrator::do_simple_md()
         }
 
         // Reset flags
-        bNS    = false;
-        do_log = false;
+        bNS       = false;
+        do_log    = false;
+        do_ene    = false;
+        bCalcEner = false;
+        bCalcVir  = false;
 
         previousbLastStep = bLastStep;
         if (stepManagerStep)
@@ -2336,6 +2348,10 @@ void gmx::legacy::Integrator::do_simple_md()
     if (logSignallerTeardown)
     {
         (*logSignallerTeardown)();
+    }
+    if (energySignallerTeardown)
+    {
+        (*energySignallerTeardown)();
     }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that

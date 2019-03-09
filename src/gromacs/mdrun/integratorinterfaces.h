@@ -112,6 +112,31 @@ class ILoggingSignallerClient
         virtual LoggingSignallerCallbackPtr getLoggingCallback() = 0;
 };
 
+// Defines a callback for the different energy-related steps
+typedef std::function<void()> EnergySignallerCallback;
+typedef std::unique_ptr<EnergySignallerCallback> EnergySignallerCallbackPtr;
+
+/*! \brief Interface defining a client of the energy signaller
+ *
+ * The energy signaller signals four different energy-related special steps:
+ *   - energy calculation steps
+ *   - virial calculation steps
+ *   - energy writing steps
+ *   - free energy calculation steps
+ * This interface requires to implement a callback for each of these cases,
+ * but the client might chose to return `nullptr` if it is not interested in
+ * a specific event.
+ */
+class IEnergySignallerClient
+{
+    public:
+        virtual EnergySignallerCallbackPtr getCalculateEnergyCallback()     = 0;
+        virtual EnergySignallerCallbackPtr getCalculateVirialCallback()     = 0;
+        virtual EnergySignallerCallbackPtr getWriteEnergyCallback()         = 0;
+        virtual EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() = 0;
+
+        virtual ~IEnergySignallerClient() = default;
+};
 }      // namespace gmx
 
 #endif //GMX_MDRUN_INTEGRATORINTERFACES_H

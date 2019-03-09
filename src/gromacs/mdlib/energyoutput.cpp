@@ -58,6 +58,7 @@
 #include "gromacs/mdlib/ebin.h"
 #include "gromacs/mdlib/mdebin_bar.h"
 #include "gromacs/mdlib/mdrun.h"
+#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdtypes/energyhistory.h"
 #include "gromacs/mdtypes/fcdata.h"
 #include "gromacs/mdtypes/group.h"
@@ -1733,6 +1734,109 @@ void EnergyOutput::fillEnergyHistory(energyhistory_t *enerhist) const
 void EnergyOutput::restoreFromEnergyHistory(const energyhistory_t &enerhist)
 {
     restore_energyhistory_from_state(mdebin, &enerhist);
+}
+
+EnergySignaller::EnergySignaller(
+        StepAccessorPtr stepAccessor,
+        int             nstcalcenergy,
+        int             nstenergy) :
+    stepAccessor_(std::move(stepAccessor)),
+    isLastStep_(false),
+    isLoggingStep_(false),
+    nstcalcenergy_(nstcalcenergy),
+    nstenergy_(nstenergy)
+{}
+
+ElementFunctionTypePtr EnergySignaller::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr EnergySignaller::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&EnergySignaller::run, this));
+}
+
+ElementFunctionTypePtr EnergySignaller::registerTeardown()
+{
+    return nullptr;
+}
+
+void EnergySignaller::registerCallback(
+        EnergySignallerCallbackPtr calculateEnergyCallback,
+        EnergySignallerCallbackPtr calculateVirialCallback,
+        EnergySignallerCallbackPtr writeEnergyCallback,
+        EnergySignallerCallbackPtr calculateFreeEnergyCallback)
+{
+    if (calculateEnergyCallback)
+    {
+        calculateEnergyCallbacks_.emplace_back(std::move(calculateEnergyCallback));
+    }
+    if (calculateVirialCallback)
+    {
+        calculateVirialCallbacks_.emplace_back(std::move(calculateVirialCallback));
+    }
+    if (writeEnergyCallback)
+    {
+        writeEnergyCallbacks_.emplace_back(std::move(writeEnergyCallback));
+    }
+    if (calculateFreeEnergyCallback)
+    {
+        calculateFreeEnergyCallbacks_.emplace_back(std::move(calculateFreeEnergyCallback));
+    }
+}
+
+/*! Queries the current step via the step accessor, and informs its clients
+ * if this is a special step.
+ */
+void EnergySignaller::run()
+{
+    auto step = (*stepAccessor_)();
+
+    bool calculateEnergy     = do_per_step(step, nstcalcenergy_);
+    bool calculateFreeEnergy = false;
+    bool writeEnergy         = do_per_step(step, nstenergy_) || isLastStep_;
+
+    if (calculateEnergy || writeEnergy || isLoggingStep_)
+    {
+        for (const auto &callback : calculateEnergyCallbacks_)
+        {
+            (*callback)();
+        }
+        for (const auto &callback : calculateVirialCallbacks_)
+        {
+            (*callback)();
+        }
+    }
+    if (writeEnergy)
+    {
+        for (const auto &callback : writeEnergyCallbacks_)
+        {
+            (*callback)();
+        }
+    }
+    if (calculateFreeEnergy)
+    {
+        for (const auto &callback : calculateFreeEnergyCallbacks_)
+        {
+            (*callback)();
+        }
+    }
+
+    isLoggingStep_ = false;
+}
+
+LastStepCallbackPtr EnergySignaller::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            [this](){this->isLastStep_ = true; });
+}
+
+LoggingSignallerCallbackPtr EnergySignaller::getLoggingCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            [this](){this->isLoggingStep_ = true; });
 }
 
 } // namespace gmx

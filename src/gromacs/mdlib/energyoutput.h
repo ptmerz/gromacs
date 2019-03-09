@@ -36,7 +36,9 @@
 #define GMX_MDLIB_ENERGYOUTPUT_H
 
 #include <cstdio>
+#include <functional>
 
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/mdtypes/enerdata.h"
 
 class energyhistory_t;
@@ -183,6 +185,62 @@ namespace gmx
 
 //! Print an energy-output header to the log file
 void print_ebin_header(FILE *log, int64_t steps, double time);
+
+/*! \internal
+ * \brief Element signalling energy related special steps
+ *
+ * This element monitors the current step, and informs its clients via callbacks
+ * of the following events:
+ *   - energy calculation step
+ *   - virial calculation step
+ *   - energy writing step
+ *   - free energy calculation step
+ */
+class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClient
+{
+    public:
+        //! Constructor
+        EnergySignaller(
+            StepAccessorPtr stepAccessor,
+            int             nstcalcenergy,
+            int             nstenergy);
+
+        //! IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        //! Allows clients to register callback for the different events
+        void registerCallback(
+            EnergySignallerCallbackPtr calculateEnergyCallback,
+            EnergySignallerCallbackPtr calculateVirialCallback,
+            EnergySignallerCallbackPtr writeEnergyCallback,
+            EnergySignallerCallbackPtr calculateFreeEnergyCallback);
+
+        //! Register callback to get informed about last step
+        LastStepCallbackPtr getLastStepCallback();
+
+        //! Register callback to get informed about logging step
+        LoggingSignallerCallbackPtr getLoggingCallback() override;
+
+    private:
+        StepAccessorPtr stepAccessor_;
+        bool            isLastStep_;
+        bool            isLoggingStep_;
+
+        int             nstcalcenergy_;
+        int             nstenergy_;
+
+        std::vector<EnergySignallerCallbackPtr> calculateEnergyCallbacks_;
+        std::vector<EnergySignallerCallbackPtr> calculateVirialCallbacks_;
+        std::vector<EnergySignallerCallbackPtr> writeEnergyCallbacks_;
+        std::vector<EnergySignallerCallbackPtr> calculateFreeEnergyCallbacks_;
+
+        /*! Queries the current step via the step accessor, and informs its clients
+         * if this is a special step.
+         */
+        void run();
+};
 
 } // namespace gmx
 
