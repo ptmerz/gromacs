@@ -1718,42 +1718,42 @@ void gmx::legacy::Integrator::do_simple_md()
     // Local state only becomes valid now.
     std::unique_ptr<t_state> stateInstance;
     t_state *                state;
-
     if (DOMAINDECOMP(cr))
     {
-        dd_init_local_top(*top_global, &top);
-
         stateInstance = std::make_unique<t_state>();
         state         = stateInstance.get();
-        dd_init_local_state(cr->dd, state_global, state);
-
-        /* Distribute the charge groups over the nodes from the master node */
-        dd_partition_system(fplog, mdlog, ir->init_step, cr, TRUE, 1,
-                            state_global, *top_global, ir,
-                            state, &f, mdAtoms, &top, fr,
-                            vsite, constr,
-                            nrnb, nullptr, FALSE);
-        shouldCheckNumberOfBondedInteractions = true;
-        upd.setNumAtoms(state->natoms);
     }
     else
     {
-        state_change_natoms(state_global, state_global->natoms);
-        f.resizeWithPadding(state_global->natoms);
-        /* Copy the pointer to the global state */
         state = state_global;
+    }
 
-        /* Generate and initialize new topology */
-        mdAlgorithmsSetupAtomData(cr, ir, *top_global, &top, fr,
-                                  &graph, mdAtoms, constr, vsite, shellfc);
+    /*
+     * Build the domdec element (needs valid state pointer)
+     */
+    auto domDecElement = std::make_unique<DomDecElement>(
+                nstglobalcomm, stepManager->getStepAccessor(),
+                mdrunOptions.verbose, mdrunOptions.verboseStepPrintInterval,
+                fplog, cr, mdlog, constr, inputrec, top_global,
+                state_global, mdAtoms, nrnb, wcycle, fr,
+                state, &top, shellfc, &upd, &f,
+                &shouldCheckNumberOfBondedInteractions);
 
-        upd.setNumAtoms(state->natoms);
+    auto domDecElementSetup    = domDecElement->registerSetup();
+    auto domDecElementRun      = domDecElement->registerRun();
+    auto domDecElementTeardown = domDecElement->registerTeardown();
+
+    neighborSearchSignaller->registerCallback(domDecElement->getNSCallback());
+    stepManager->registerLastStepCallback(domDecElement->getLastStepCallback());
+
+    if (domDecElementSetup)
+    {
+        (*domDecElementSetup)();
     }
 
     /*
      * Build the force or shell / flex con element
      */
-
     std::unique_ptr<ForceElement>   forceElement;
     std::unique_ptr<ShellFCElement> shellFCElement;
     ElementFunctionTypePtr          forceSetup;
@@ -2057,22 +2057,9 @@ void gmx::legacy::Integrator::do_simple_md()
         do_verbose = mdrunOptions.verbose &&
             (step % mdrunOptions.verboseStepPrintInterval == 0 || bFirstStep || bLastStep);
 
-        if (bNS)
+        if (domDecElementRun)
         {
-            if (DOMAINDECOMP(cr))
-            {
-                bool bMasterState = false;
-                /* Repartition the domain decomposition */
-                dd_partition_system(fplog, mdlog, step, cr,
-                                    bMasterState, nstglobalcomm,
-                                    state_global, *top_global, ir,
-                                    state, &f, mdAtoms, &top, fr,
-                                    vsite, constr,
-                                    nrnb, wcycle,
-                                    do_verbose);
-                shouldCheckNumberOfBondedInteractions = true;
-                upd.setNumAtoms(state->natoms);
-            }
+            (*domDecElementRun)();
         }
 
         if (MASTER(cr) && do_log)
@@ -2374,6 +2361,10 @@ void gmx::legacy::Integrator::do_simple_md()
     if (energySignallerTeardown)
     {
         (*energySignallerTeardown)();
+    }
+    if (domDecElementTeardown)
+    {
+        (*domDecElementTeardown)();
     }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that

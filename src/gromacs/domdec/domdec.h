@@ -61,7 +61,9 @@
 
 #include <vector>
 
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
@@ -72,12 +74,14 @@ struct gmx_ddbox_t;
 struct gmx_domdec_zones_t;
 struct gmx_localtop_t;
 struct gmx_mtop_t;
+struct gmx_shellfc_t;
 struct gmx_vsite_t;
 struct MdrunOptions;
 struct t_block;
 struct t_blocka;
 struct t_commrec;
 struct t_forcerec;
+struct t_graph;
 struct t_inputrec;
 struct t_mdatoms;
 struct t_nrnb;
@@ -86,8 +90,11 @@ class t_state;
 
 namespace gmx
 {
+class Constraints;
+class MDAtoms;
 class MDLogger;
 class LocalAtomSetManager;
+class Update;
 } // namespace
 
 /*! \brief Returns the global topology atom number belonging to local atom index i.
@@ -384,5 +391,95 @@ real dd_choose_grid(const gmx::MDLogger &mdlog,
                     gmx_bool bDynLoadBal, real dlb_scale,
                     real cellsize_limit, real cutoff_dd,
                     gmx_bool bInterCGBondeds);
+
+namespace gmx
+{
+class DomDecElement :
+    public IIntegratorElement, public INeighborSearchSignallerClient, public ILastStepClient
+{
+    public:
+        DomDecElement(
+            int                 nstglobalcomm,
+            StepAccessorPtr     stepAccessor,
+            bool                isVerbose,
+            int                 verbosePrintInterval,
+            FILE               *fplog,
+            t_commrec          *cr,
+            const MDLogger     &mdlog,
+            Constraints        *constr,
+            t_inputrec         *inputrec,
+            gmx_mtop_t         *top_global,
+            t_state            *state_global,
+            MDAtoms            *mdAtoms,
+            t_nrnb             *nrnb,
+            gmx_wallcycle      *wcycle,
+            t_forcerec         *fr,
+            t_state            *localState,
+            gmx_localtop_t     *localTopology,
+            gmx_shellfc_t      *shellfc,
+            Update             *upd,
+            PaddedVector<RVec> *f,
+            bool               *shouldCheckNumberOfBondedInteractions);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        NeighborSearchSignallerCallbackPtr getNSCallback() override;
+
+        LastStepCallbackPtr getLastStepCallback() override;
+
+    private:
+        bool      *shouldCheckNumberOfBondedInteractions_;
+        bool       isNSStep_;
+        const bool isVerbose_;
+        const int  verbosePrintInterval_;
+        bool       isFirstStep_;
+        bool       isLastStep_;
+
+        //! Global communication interval
+        const int nstglobalcomm_;
+
+        void init();
+        void run();
+
+        StepAccessorPtr stepAccessor_;
+
+        // TODO: Rethink access to these
+        //! Handles logging.
+        FILE                               *fplog_;
+        //! Handles communication.
+        t_commrec                          *cr_;
+        //! Handles logging.
+        const MDLogger                     &mdlog_;
+        //! Handles constraints.
+        Constraints                        *constr_;
+        //! Contains user input mdp options.
+        t_inputrec                         *inputrec_;
+        //! Full system topology.
+        gmx_mtop_t                         *top_global_;
+        //! Full simulation state (only non-nullptr on master rank).
+        t_state                            *state_global_;
+        //! Atom parameters for this domain.
+        MDAtoms                            *mdAtoms_;
+        //! Manages flop accounting.
+        t_nrnb                             *nrnb_;
+        //! Manages wall cycle accounting.
+        gmx_wallcycle                      *wcycle_;
+        //! Parameters for force calculations.
+        t_forcerec                         *fr_;
+
+        //! The local state
+        t_state                            *localState_;
+        //! The local topology
+        gmx_localtop_t                     *localTopology_;
+        //! shellfc
+        gmx_shellfc_t                      *shellfc_;
+        //! Update
+        Update                             *upd_;
+        //! The force vector
+        PaddedVector<gmx::RVec>            *f_;
+};
+}
 
 #endif

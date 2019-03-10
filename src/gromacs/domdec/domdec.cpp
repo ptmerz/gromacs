@@ -67,6 +67,8 @@
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/constraintrange.h"
 #include "gromacs/mdlib/mdrun.h"
+#include "gromacs/mdlib/mdsetup.h"
+#include "gromacs/mdlib/update.h"
 #include "gromacs/mdlib/updategroups.h"
 #include "gromacs/mdlib/vsite.h"
 #include "gromacs/mdtypes/commrec.h"
@@ -3084,3 +3086,161 @@ gmx_bool change_dd_cutoff(t_commrec     *cr,
 
     return bCutoffAllowed;
 }
+
+namespace gmx
+{
+gmx::ElementFunctionTypePtr gmx::DomDecElement::registerSetup()
+{
+    return nullptr;
+}
+
+gmx::ElementFunctionTypePtr gmx::DomDecElement::registerRun()
+{
+    if (DOMAINDECOMP(cr_))
+    {
+        return std::make_unique<ElementFunctionType>(
+                std::bind(&DomDecElement::run, this));
+    }
+    return nullptr;
+}
+
+gmx::ElementFunctionTypePtr gmx::DomDecElement::registerTeardown()
+{
+    return nullptr;
+}
+
+DomDecElement::DomDecElement(
+        int                 nstglobalcomm,
+        StepAccessorPtr     stepAccessor,
+        bool                isVerbose,
+        int                 verbosePrintInterval,
+        FILE               *fplog,
+        t_commrec          *cr,
+        const MDLogger     &mdlog,
+        Constraints        *constr,
+        t_inputrec         *inputrec,
+        gmx_mtop_t         *top_global,
+        t_state            *state_global,
+        MDAtoms            *mdAtoms,
+        t_nrnb             *nrnb,
+        gmx_wallcycle      *wcycle,
+        t_forcerec         *fr,
+        t_state            *localState,
+        gmx_localtop_t     *localTopology,
+        gmx_shellfc_t      *shellfc,
+        Update             *upd,
+        PaddedVector<RVec> *f,
+        bool               *shouldCheckNumberOfBondedInteractions) :
+    shouldCheckNumberOfBondedInteractions_(shouldCheckNumberOfBondedInteractions),
+    isNSStep_(false),
+    isVerbose_(isVerbose),
+    verbosePrintInterval_(verbosePrintInterval),
+    isFirstStep_(true),
+    isLastStep_(false),
+    nstglobalcomm_(nstglobalcomm),
+    stepAccessor_(std::move(stepAccessor)),
+    fplog_(fplog),
+    cr_(cr),
+    mdlog_(mdlog),
+    constr_(constr),
+    inputrec_(inputrec),
+    top_global_(top_global),
+    state_global_(state_global),
+    mdAtoms_(mdAtoms),
+    nrnb_(nrnb),
+    wcycle_(wcycle),
+    fr_(fr),
+    localState_(localState),
+    localTopology_(localTopology),
+    shellfc_(shellfc),
+    upd_(upd),
+    f_(f)
+{
+    init();
+}
+
+void gmx::DomDecElement::init()
+{
+    if (DOMAINDECOMP(cr_))
+    {
+        dd_init_local_top(*top_global_, localTopology_);
+        dd_init_local_state(cr_->dd, state_global_, localState_);
+
+        // constant choices for this call to dd_partition_system
+        const bool     verbose       = false;
+        const bool     isMasterState = true;
+        const int      nstglobalcomm = 1;
+        gmx_wallcycle *wcycle        = nullptr;
+
+        // disabled functionality
+        gmx_vsite_t *vsite = nullptr;
+
+        /* Distribute the charge groups over the nodes from the master node */
+        dd_partition_system(fplog_, mdlog_, inputrec_->init_step, cr_, isMasterState, nstglobalcomm,
+                            state_global_, *top_global_, inputrec_,
+                            localState_, f_, mdAtoms_, localTopology_, fr_,
+                            vsite, constr_,
+                            nrnb_, wcycle, verbose);
+        *shouldCheckNumberOfBondedInteractions_ = true;
+        upd_->setNumAtoms(localState_->natoms);
+    }
+    else
+    {
+        // disabled functionality
+        gmx_vsite_t *vsite = nullptr;
+        t_graph     *graph = nullptr;
+
+        state_change_natoms(state_global_, state_global_->natoms);
+        f_->resizeWithPadding(state_global_->natoms);
+
+        /* Generate and initialize new topology */
+        mdAlgorithmsSetupAtomData(cr_, inputrec_, *top_global_, localTopology_, fr_,
+                                  &graph, mdAtoms_, constr_, vsite, shellfc_);
+
+        upd_->setNumAtoms(localState_->natoms);
+    }
+}
+
+void gmx::DomDecElement::run()
+{
+    if (!isNSStep_)
+    {
+        return;
+    }
+    // constant choices for this call to dd_partition_system
+    const bool isMasterState = false;
+
+    // disabled functionality
+    gmx_vsite_t *vsite = nullptr;
+
+    auto         step = (*stepAccessor_)();
+
+    bool         doVerbose = isVerbose_ &&
+        (step % verbosePrintInterval_ == 0 || isFirstStep_ || isLastStep_);;
+
+    /* Repartition the domain decomposition */
+    dd_partition_system(fplog_, mdlog_, step, cr_,
+                        isMasterState, nstglobalcomm_,
+                        state_global_, *top_global_, inputrec_,
+                        localState_, f_, mdAtoms_, localTopology_, fr_,
+                        vsite, constr_,
+                        nrnb_, wcycle_,
+                        doVerbose);  // was: do_verbose && !bPMETunePrinting
+    *shouldCheckNumberOfBondedInteractions_ = true;
+    upd_->setNumAtoms(localState_->natoms);
+    isNSStep_    = false;
+    isFirstStep_ = false;
+}
+
+NeighborSearchSignallerCallbackPtr DomDecElement::getNSCallback()
+{
+    return std::make_unique<NeighborSearchSignallerCallback>(
+            [this](){this->isNSStep_ = true; });
+}
+
+LastStepCallbackPtr DomDecElement::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            [this](){this->isLastStep_ = true; });
+}
+}  // namespace gmx
