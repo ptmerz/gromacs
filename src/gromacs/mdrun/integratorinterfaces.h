@@ -44,6 +44,8 @@
 #include <functional>
 #include <memory>
 
+#include "gromacs/utility/real.h"
+
 namespace gmx
 {
 //! Defines the (argument-less) calls that represent setup, run and teardown of the elements
@@ -65,6 +67,25 @@ class IIntegratorElement
         virtual ElementFunctionTypePtr registerTeardown() = 0;
 
         virtual ~IIntegratorElement() = default;
+};
+
+//! Defines a function / function pointer which can be used to access the current step
+typedef std::function<long()> StepAccessor;
+typedef std::unique_ptr<StepAccessor> StepAccessorPtr;
+//! Defines a function / function pointer which can be used to access the current time
+typedef std::function<real()> TimeAccessor;
+typedef std::unique_ptr<TimeAccessor> TimeAccessorPtr;
+
+//! Defines a callback for the last step of the integrator run
+typedef std::function<void()> LastStepCallback;
+typedef std::unique_ptr<LastStepCallback> LastStepCallbackPtr;
+
+//! Interface defining a client of the step manager needing to know when the last step happens
+class ILastStepClient
+{
+    public:
+        //! Client returns a callback function pointer
+        virtual LastStepCallbackPtr getLastStepCallback() = 0;
 };
 
 }      // namespace gmx

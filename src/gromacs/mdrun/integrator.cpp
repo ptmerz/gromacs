@@ -51,6 +51,77 @@
 namespace gmx
 {
 
+SimpleStepManager::SimpleStepManager(
+        real timestep, long nsteps, long step, real time) :
+    step_(step),
+    nsteps_(nsteps + step),
+    initialTime_(time),
+    time_(time),
+    timestep_(timestep)
+{}
+
+ElementFunctionTypePtr SimpleStepManager::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&SimpleStepManager::setup, this));
+}
+ElementFunctionTypePtr SimpleStepManager::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&SimpleStepManager::increment, this));
+}
+ElementFunctionTypePtr SimpleStepManager::registerTeardown()
+{
+    return nullptr;
+}
+
+//! Returns a function pointer allowing to access the current step number
+StepAccessorPtr SimpleStepManager::getStepAccessor() const
+{
+    return std::make_unique<StepAccessor>(
+            [this](){return this->step_; });
+}
+//! Returns a function pointer allowing to access the current time
+TimeAccessorPtr SimpleStepManager::getTimeAccessor() const
+{
+    return std::make_unique<TimeAccessor>(
+            [this](){return this->time_; });
+}
+
+//! Allows clients to register a last-step callback
+void SimpleStepManager::registerLastStepCallback(gmx::LastStepCallbackPtr callback)
+{
+    if (callback)
+    {
+        lastStepCallbacks_.emplace_back(std::move(callback));
+    }
+}
+
+//! Increments the step and time, needs to be called every step
+void SimpleStepManager::increment()
+{
+    ++step_;
+    time_ = initialTime_ + step_*timestep_;
+    if (step_ == nsteps_)
+    {
+        for (auto &callback : lastStepCallbacks_)
+        {
+            (*callback)();
+        }
+    }
+}
+//! Called before the first step - notifies clients if first step is also last step
+void SimpleStepManager::setup()
+{
+    if (step_ == nsteps_)
+    {
+        for (auto &callback : lastStepCallbacks_)
+        {
+            (*callback)();
+        }
+    }
+}
+
 namespace legacy
 {
 

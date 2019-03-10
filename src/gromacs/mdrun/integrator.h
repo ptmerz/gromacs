@@ -45,6 +45,7 @@
 #include <cstdio>
 
 #include <memory>
+#include <vector>
 
 #include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -86,6 +87,49 @@ class Integrator
     public:
         virtual void run()    = 0;
         virtual ~Integrator() = default;
+};
+
+/*! \internal
+ * \brief Element managing the current step and time
+ *
+ * This element keeps track of the current step and time, it should be placed in the
+ * innermost part of the integrator loop. The current step and time can be accessed
+ * using accessors, available using `getStepAccessor()` and `getTimeAccessor()`. Clients
+ * can also register a callback to be notified when the last integrator step starts.
+ */
+class SimpleStepManager final : public IIntegratorElement
+{
+    public:
+        explicit SimpleStepManager(
+            real timestep, long nsteps = -1, long step = 0, real time = 0.0);
+
+        //! IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        //! Returns a function pointer allowing to access the current step number
+        StepAccessorPtr getStepAccessor() const;
+        //! Returns a function pointer allowing to access the current time
+        TimeAccessorPtr getTimeAccessor() const;
+
+        //! Allows clients to register a last-step callback
+        void registerLastStepCallback(LastStepCallbackPtr callback);
+
+    private:
+        long step_;
+        long nsteps_;
+        real initialTime_;
+        real time_;
+        real timestep_;
+
+        //! List of callback to be called when the last step starts
+        std::vector<LastStepCallbackPtr> lastStepCallbacks_;
+
+        //! Increments the step and time, needs to be called every step
+        void increment();
+        //! Called before the first step - notifies clients if first step is also last step
+        void setup();
 };
 
 namespace legacy

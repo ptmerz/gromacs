@@ -1560,8 +1560,6 @@ void gmx::legacy::Integrator::do_simple_md()
     // t_inputrec is being replaced by IMdpOptionsProvider, so this
     // will go away eventually.
     t_inputrec             *ir   = inputrec;
-    int64_t                 step, step_rel;
-    double                  t = ir->init_t, t0 = ir->init_t;
     gmx_bool                bGStat, bCalcVir, bCalcEnerStep, bCalcEner;
     gmx_bool                bNS, bStopCM,
                             bFirstStep, bInitStep, bLastStep = FALSE;
@@ -1610,6 +1608,22 @@ void gmx::legacy::Integrator::do_simple_md()
         GMX_LOG(mdlog.info).asParagraph().
             appendText("The -noconfout functionality is deprecated, and may be removed in a future version.");
     }
+
+    /*
+     * Build step manager
+     */
+    auto    stepManager = std::make_unique<SimpleStepManager>(
+                inputrec->delta_t, inputrec->nsteps, inputrec->init_step, inputrec->init_t);
+    auto    stepAccessor = stepManager->getStepAccessor();
+    auto    timeAccessor = stepManager->getTimeAccessor();
+    int64_t step         = (*stepAccessor)();
+    double  t            = (*timeAccessor)();
+
+    // Later, step manager will inform elements directly that the last step is coming.
+    // Currently, define a lambda to take care of that
+    auto lastStepCallback = std::make_unique<LastStepCallback>(
+                LastStepCallback([&bLastStep](){bLastStep = true; }));
+    stepManager->registerLastStepCallback(std::move(lastStepCallback));
 
     const bool bRerunMD      = false;
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
@@ -1866,6 +1880,10 @@ void gmx::legacy::Integrator::do_simple_md()
      *
      ************************************************************/
 
+    auto stepManagerSetup    = stepManager->registerSetup();
+    auto stepManagerStep     = stepManager->registerRun();
+    auto stepManagerTeardown = stepManager->registerTeardown();
+
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
@@ -1882,22 +1900,20 @@ void gmx::legacy::Integrator::do_simple_md()
     DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion   = (DOMAINDECOMP(cr) ? DdOpenBalanceRegionBeforeForceComputation::yes : DdOpenBalanceRegionBeforeForceComputation::no);
     DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion  = (DOMAINDECOMP(cr) ? DdCloseBalanceRegionAfterForceComputation::yes : DdCloseBalanceRegionAfterForceComputation::no);
 
-    step     = ir->init_step;
-    step_rel = 0;
-
-    /* and stop now if we should */
-    bLastStep = (bLastStep || (ir->nsteps >= 0 && step_rel > ir->nsteps));
-    while (!bLastStep)
+    if (stepManagerSetup)
     {
+        (*stepManagerSetup)();
+    }
 
-
+    // With the step manager, we will be setting last step at the end of the step,
+    // and want to actually do a last step before stopping.
+    auto previousbLastStep = bLastStep;
+    while (!previousbLastStep)
+    {
         /* Determine whether or not to do Neighbour Searching */
         bNS = (bFirstStep || (ir->nstlist > 0  && step % ir->nstlist == 0));
 
         wallcycle_start(wcycle, ewcSTEP);
-
-        bLastStep = (step_rel == ir->nsteps);
-        t         = t0 + step*ir->delta_t;
 
         /* Stop Center of Mass motion */
         bStopCM = (ir->comm_mode != ecmNO && do_per_step(step, ir->nstcomm));
@@ -2098,7 +2114,7 @@ void gmx::legacy::Integrator::do_simple_md()
          * the update.
          */
         const bool checkpointing = false;
-        do_md_trajectory_writing(fplog, cr, nfile, fnm, step, step_rel, t,
+        do_md_trajectory_writing(fplog, cr, nfile, fnm, step, step - inputrec->init_step, t,
                                  ir, state, state_global, observablesHistory,
                                  top_global, fr,
                                  outf, energyOutput, ekind, f,
@@ -2256,12 +2272,21 @@ void gmx::legacy::Integrator::do_simple_md()
             dd_cycles_add(cr->dd, cycles, ddCyclStep);
         }
 
+        previousbLastStep = bLastStep;
+        if (stepManagerStep)
+        {
+            (*stepManagerStep)();
+        }
         /* increase the MD step number */
-        step++;
-        step_rel++;
-
+        step = (*stepAccessor)();
+        t    = (*timeAccessor)();
     }
     /* End of main MD loop */
+
+    if (stepManagerTeardown)
+    {
+        (*stepManagerTeardown)();
+    }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that
      * before stopping the time measurements. */
@@ -2288,9 +2313,9 @@ void gmx::legacy::Integrator::do_simple_md()
     }
     done_mdoutf(outf);
 
-    done_shellfc(fplog, shellfc, step_rel);
+    done_shellfc(fplog, shellfc, step - inputrec->init_step);
 
-    walltime_accounting_set_nsteps_done(walltime_accounting, step_rel);
+    walltime_accounting_set_nsteps_done(walltime_accounting, step - inputrec->init_step);
 
     destroy_enerdata(enerd);
 
