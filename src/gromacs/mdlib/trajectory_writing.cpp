@@ -40,6 +40,7 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/tngio.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdlib/mdrun.h"
 #include "gromacs/mdlib/sim_util.h"
@@ -207,4 +208,142 @@ do_md_trajectory_writing(FILE                     *fplog,
         }
         wallcycle_stop(mdoutf_get_wcycle(outf), ewcTRAJ);
     }
+}
+
+namespace gmx
+{
+TrajectoryWriter::TrajectoryWriter(
+        FILE *fplog, int nfile, const t_filenm fnm[],
+        const MdrunOptions &mdrunOptions,
+        const t_commrec *cr,
+        gmx::IMDOutputProvider *outputProvider,
+        const t_inputrec *ir, gmx_mtop_t *top_global,
+        const gmx_output_env_t *oenv, gmx_wallcycle_t wcycle)
+{
+    outf_ = init_mdoutf(
+                fplog, nfile, fnm, mdrunOptions, cr,
+                outputProvider, ir, top_global, oenv, wcycle);
+}
+
+void TrajectoryWriter::setup()
+{
+    for (auto &callback : setupCallbacks_)
+    {
+        (*callback)(outf_);
+    }
+}
+
+void TrajectoryWriter::write()
+{
+    for (auto &callback : runTrajectoryCallbacks_)
+    {
+        (*callback)(outf_);
+    }
+    for (auto &callback : runEnergyCallbacks_)
+    {
+        (*callback)(outf_);
+    }
+}
+
+void TrajectoryWriter::teardown()
+{
+    for (auto &callback : teardownCallbacks_)
+    {
+        (*callback)(outf_);
+    }
+    mdoutf_tng_close(outf_);
+    done_mdoutf(outf_);
+}
+
+ElementFunctionTypePtr TrajectoryWriter::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&TrajectoryWriter::setup, this));
+}
+
+ElementFunctionTypePtr TrajectoryWriter::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&TrajectoryWriter::write, this));
+}
+
+
+ElementFunctionTypePtr TrajectoryWriter::registerTeardown()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&TrajectoryWriter::teardown, this));
+}
+
+void TrajectoryWriter::registerClient(
+        TrajectoryWriterCallbackPtr setupCallback,
+        TrajectoryWriterCallbackPtr runTrajectoryCallback,
+        TrajectoryWriterCallbackPtr runEnergyCallback,
+        TrajectoryWriterCallbackPtr teardownCallback)
+{
+    if (setupCallback)
+    {
+        setupCallbacks_.emplace_back(std::move(setupCallback));
+    }
+    if (runTrajectoryCallback)
+    {
+        runTrajectoryCallbacks_.emplace_back(std::move(runTrajectoryCallback));
+    }
+    if (runEnergyCallback)
+    {
+        runEnergyCallbacks_.emplace_back(std::move(runEnergyCallback));
+    }
+    if (teardownCallback)
+    {
+        teardownCallbacks_.emplace_back(std::move(teardownCallback));
+    }
+}
+
+TrajectorySignaller::TrajectorySignaller(
+        StepAccessorPtr stepAccessor,
+        int nstxout, int nstvout, int nstfout, int nstxout_compressed) :
+    stepAccessor_(std::move(stepAccessor)),
+    nstxout_(nstxout),
+    nstvout_(nstvout),
+    nstfout_(nstfout),
+    nstxout_compressed_(nstxout_compressed)
+{}
+
+ElementFunctionTypePtr TrajectorySignaller::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr TrajectorySignaller::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&TrajectorySignaller::run, this));
+}
+
+ElementFunctionTypePtr TrajectorySignaller::registerTeardown()
+{
+    return nullptr;
+}
+
+void TrajectorySignaller::registerCallback(TrajectorySignallerCallbackPtr callback)
+{
+    if (callback)
+    {
+        callbacks_.emplace_back(std::move(callback));
+    }
+}
+
+void TrajectorySignaller::run()
+{
+    auto currentStep = (*stepAccessor_)();
+    if (do_per_step(currentStep, nstxout_) ||
+        do_per_step(currentStep, nstvout_) ||
+        do_per_step(currentStep, nstfout_) ||
+        do_per_step(currentStep, nstxout_compressed_))
+    {
+        for (const auto &callback : callbacks_)
+        {
+            (*callback)();
+        }
+    }
+}
 }

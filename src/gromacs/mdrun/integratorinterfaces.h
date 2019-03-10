@@ -46,6 +46,8 @@
 
 #include "gromacs/utility/real.h"
 
+struct gmx_mdoutf;
+
 namespace gmx
 {
 //! Defines the (argument-less) calls that represent setup, run and teardown of the elements
@@ -136,6 +138,44 @@ class IEnergySignallerClient
         virtual EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() = 0;
 
         virtual ~IEnergySignallerClient() = default;
+};
+
+// Defines a callback for steps in which trajectory writing is happening
+typedef std::function<void()> TrajectorySignallerCallback;
+typedef std::unique_ptr<TrajectorySignallerCallback> TrajectorySignallerCallbackPtr;
+
+// Interface defining a client of the trajectory signaller
+class ITrajectorySignallerClient
+{
+    public:
+        virtual TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() = 0;
+};
+
+// Define a callback which allows elements to write to the trajectory
+typedef std::function<void(gmx_mdoutf* outf)> TrajectoryWriterCallback;
+typedef std::unique_ptr<TrajectoryWriterCallback> TrajectoryWriterCallbackPtr;
+
+/*! \brief Interface defining a client of the trajectory writer
+ *
+ * A trajectory writer can register 4 different functions, which will be called
+ *   - at setup time
+ *   - at trajectory writing steps
+ *   - at energy writing steps
+ *   - at teardown time
+ * This interface requires to implement a callback for each of these cases,
+ * but the client might chose to return `nullptr` if it is not interested in
+ * a specific event. The callback must accept an argument of type `gmx_mdoutf*`
+ * to hand the file pointer.
+ */
+class ITrajectoryWriterClient
+{
+    public:
+        virtual TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup()    = 0;
+        virtual TrajectoryWriterCallbackPtr registerTrajectoryRun()            = 0;
+        virtual TrajectoryWriterCallbackPtr registerEnergyRun()                = 0;
+        virtual TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() = 0;
+
+        virtual ~ITrajectoryWriterClient() = default;
 };
 
 /*! Callback allowing domdec element to signal global reduction element

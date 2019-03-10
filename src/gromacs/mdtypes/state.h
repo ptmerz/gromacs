@@ -55,12 +55,14 @@
 #define GMX_MDTYPES_STATE_H
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <vector>
 
 #include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdlib/trajectory_writing.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -314,5 +316,61 @@ positionsFromStatePointer(const t_state *state)
         return {};
     }
 };
+
+namespace gmx
+{
+
+class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerClient
+{
+    public:
+        MicroState(
+            StepAccessorPtr           stepAccessor,
+            TimeAccessorPtr           timeAccessor,
+            int                       natoms,
+            FILE                     *fplog,
+            const t_commrec          *cr,
+            t_state                  *globalState,
+            t_state                  *localState,
+            ArrayRefWithPadding<RVec> f,
+            int                       nstxout,
+            int                       nstvout,
+            int                       nstfout,
+            int                       nstxout_compressed);
+
+        // ITrajectoryWriterClient
+        TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup() override;
+        TrajectoryWriterCallbackPtr registerTrajectoryRun() override;
+        TrajectoryWriterCallbackPtr registerEnergyRun() override;
+        TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() override;
+
+        // ITrajectorySignallerClient
+        TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() override;
+
+    private:
+        int natoms_;
+        int nstxout_;
+        int nstvout_;
+        int nstfout_;
+        int nstxout_compressed_;
+
+        // Access step & time
+        StepAccessorPtr stepAccessor_;
+        TimeAccessorPtr timeAccessor_;
+
+        t_state        *localStateBackup_;
+
+        void write(gmx_mdoutf_t outf);
+        void writeTrajectoryThisStep();
+
+        // TODO: Rethink access to these
+        FILE                     *fplog_;
+        const t_commrec          *cr_;
+        t_state                  *globalState_;
+        t_state                  *localState_;
+        ArrayRefWithPadding<RVec> f_;
+};
+
+
+}
 
 #endif

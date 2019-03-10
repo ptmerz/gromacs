@@ -60,6 +60,7 @@ namespace gmx
 {
 class Awh;
 class Constraints;
+class MDAtoms;
 }
 
 extern const char *egrp_nm[egNR+1];
@@ -196,7 +197,7 @@ void print_ebin_header(FILE *log, int64_t steps, double time);
  *   - energy writing step
  *   - free energy calculation step
  */
-class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClient
+class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClient, public ILastStepClient
 {
     public:
         //! Constructor
@@ -218,7 +219,7 @@ class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClien
             EnergySignallerCallbackPtr calculateFreeEnergyCallback);
 
         //! Register callback to get informed about last step
-        LastStepCallbackPtr getLastStepCallback();
+        LastStepCallbackPtr getLastStepCallback() override;
 
         //! Register callback to get informed about logging step
         LoggingSignallerCallbackPtr getLoggingCallback() override;
@@ -240,6 +241,95 @@ class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClien
          * if this is a special step.
          */
         void run();
+};
+
+class EnergyElement :
+    public IIntegratorElement, public ITrajectoryWriterClient,
+    public IEnergySignallerClient, public ILoggingSignallerClient,
+    public ILastStepClient
+{
+    public:
+        EnergyElement(
+            StepAccessorPtr stepAccessor,
+            TimeAccessorPtr timeAccessor,
+            gmx_mtop_t     *mtop,
+            t_inputrec     *ir,
+            MDAtoms        *mdAtoms,
+            t_state        *localState,
+            gmx_enerdata_t *enerd,
+            tensor          force_vir,
+            tensor          shake_vir,
+            tensor          total_vir,
+            tensor          pres,
+            gmx_ekindata_t *ekind,
+            Constraints    *constr,
+            rvec            mu_tot,
+            FILE           *fplog,
+            t_fcdata       *fcd,
+            bool            isMaster);
+
+        // IIntegratorElement
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        // ITrajectoryWriterClient
+        TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup() override;
+        TrajectoryWriterCallbackPtr registerTrajectoryRun() override;
+        TrajectoryWriterCallbackPtr registerEnergyRun() override;
+        TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() override;
+
+        //IEnergySignallerClient
+        EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateVirialCallback() override;
+        EnergySignallerCallbackPtr getWriteEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() override;
+
+        LastStepCallbackPtr getLastStepCallback() override;
+
+        LoggingSignallerCallbackPtr getLoggingCallback() override;
+
+    private:
+        EnergyOutput    energyOutput_;
+
+        const bool      isMaster_;
+        bool            isEnergyCalculationStep_;
+        bool            writeEnergy_;
+        bool            isFreeEnergyCalculationStep_;
+        bool            writeLog_;
+        bool            isLastStep_;
+
+        StepAccessorPtr stepAccessor_;
+        TimeAccessorPtr timeAccessor_;
+
+        void step();
+        void setup(gmx_mdoutf *outf);
+        void write(gmx_mdoutf *outf, bool isTeardown = false);
+
+        //! Contains user input mdp options.
+        t_inputrec       *inputrec_;
+        //! Full system topology.
+        const gmx_mtop_t *top_global_;
+        //! Atom parameters for this domain.
+        MDAtoms          *mdAtoms_;
+        //! The local state
+        t_state          *localState_;
+        //! Energy data structure
+        gmx_enerdata_t   *enerd_;
+        //! Virials
+        rvec             *force_vir_, *shake_vir_, *total_vir_, *pres_;
+        //! The kinetic energy data structure
+        gmx_ekindata_t   *ekind_;
+        //! Handles constraints.
+        Constraints      *constr_;
+        //! Total dipole moment (I guess...)
+        real            * mu_tot_;
+        //! Handles logging.
+        FILE             *fplog_;
+        //! Helper struct for force calculations.
+        t_fcdata         *fcd_;
+        //! Global topology groups
+        gmx_groups_t     *groups_;
 };
 
 } // namespace gmx

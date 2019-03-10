@@ -1575,7 +1575,6 @@ void gmx::legacy::Integrator::do_simple_md()
     gmx_groups_t           *groups;
     gmx_shellfc_t          *shellfc;
     real                    dvdl_constr;
-    matrix                  lastbox;
     /* for FEP */
     double                  cycles;
     t_extmass               MassQ;
@@ -1656,7 +1655,6 @@ void gmx::legacy::Integrator::do_simple_md()
             std::move(writeEnerCallback),
             nullptr);
 
-    const bool bRerunMD      = false;
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
 
     nstglobalcomm   = check_nstglobalcomm(mdlog, nstglobalcomm, ir, cr);
@@ -1669,9 +1667,6 @@ void gmx::legacy::Integrator::do_simple_md()
         pleaseCiteCouplingAlgorithms(fplog, *ir);
     }
     init_nrnb(nrnb);
-    gmx_mdoutf       *outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider, ir, top_global, oenv, wcycle);
-    gmx::EnergyOutput energyOutput;
-    energyOutput.prepare(mdoutf_get_fp_ene(outf), top_global, ir, mdoutf_get_fp_dhdl(outf));
 
     /* Energy terms and groups */
     snew(enerd, 1);
@@ -1691,16 +1686,6 @@ void gmx::legacy::Integrator::do_simple_md()
     shellfc = init_shell_flexcon(fplog,
                                  top_global, constr ? constr->numFlexibleConstraints() : 0,
                                  ir->nstcalcenergy, DOMAINDECOMP(cr));
-
-    {
-        double io = compute_io(ir, top_global->natoms, groups, energyOutput.numEnergyTerms(), 1);
-        if ((io > 2000) && MASTER(cr))
-        {
-            fprintf(stderr,
-                    "\nWARNING: This run will generate roughly %.0f Mb of data\n\n",
-                    io);
-        }
-    }
 
     // Local state only becomes valid now.
     std::unique_ptr<t_state> stateInstance;
@@ -1756,6 +1741,67 @@ void gmx::legacy::Integrator::do_simple_md()
     if (domDecElementSetup)
     {
         (*domDecElementSetup)();
+    }
+
+    /*
+     * Trajectory / Energy
+     */
+    auto trajectoryWriter = std::make_unique<TrajectoryWriter>(
+                fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
+                inputrec, top_global, oenv, wcycle);
+
+    auto trajectorySignaller = std::make_unique<TrajectorySignaller>(
+                stepManager->getStepAccessor(),
+                inputrec->nstxout, inputrec->nstvout, inputrec->nstfout, inputrec->nstxout_compressed);
+
+    auto energyElement = std::make_unique<EnergyElement>(
+                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                top_global, inputrec, mdAtoms, state,
+                enerd, force_vir, shake_vir,
+                total_vir, pres,
+                eKinData.get(), constr, mu_tot, fplog, fcd, MASTER(cr));
+    // Could be done by a builder
+    trajectoryWriter->registerClient(
+            energyElement->registerTrajectoryWriterSetup(),
+            energyElement->registerTrajectoryRun(),
+            energyElement->registerEnergyRun(),
+            energyElement->registerTrajectoryWriterTeardown());
+    stepManager->registerLastStepCallback(energyElement->getLastStepCallback());
+    energySignaller->registerCallback(
+            energyElement->getCalculateEnergyCallback(),
+            energyElement->getCalculateVirialCallback(),
+            energyElement->getWriteEnergyCallback(),
+            energyElement->getCalculateFreeEnergyCallback());
+    logSignaller->registerCallback(energyElement->getLoggingCallback());
+
+    auto microState = std::make_shared<MicroState>(
+                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                top_global->natoms, fplog, cr, state_global,
+                state, f.arrayRefWithPadding(),
+                inputrec->nstxout, inputrec->nstvout, inputrec->nstfout, inputrec->nstxout_compressed);
+    // Could be done by a builder
+    trajectoryWriter->registerClient(
+            microState->registerTrajectoryWriterSetup(),
+            microState->registerTrajectoryRun(),
+            microState->registerEnergyRun(),
+            microState->registerTrajectoryWriterTeardown());
+    trajectorySignaller->registerCallback(microState->getTrajectorySignallerCallback());
+
+    auto energyElementSetup    = energyElement->registerSetup();
+    auto energyElementRun      = energyElement->registerRun();
+    auto energyElementTeardown = energyElement->registerTeardown();
+
+    auto trajectoryWriterSetup    = trajectoryWriter->registerSetup();
+    auto trajectoryWriterRun      = trajectoryWriter->registerRun();
+    auto trajectoryWriterTeardown = trajectoryWriter->registerTeardown();
+
+    auto trajectorySignallerSetup    = trajectorySignaller->registerSetup();
+    auto trajectorySignallerRun      = trajectorySignaller->registerRun();
+    auto trajectorySignallerTeardown = trajectorySignaller->registerTeardown();
+
+    if (trajectoryWriterSetup)
+    {
+        (*trajectoryWriterSetup)();
     }
 
     /*
@@ -1821,21 +1867,7 @@ void gmx::legacy::Integrator::do_simple_md()
 
     const ContinuationOptions &continuationOptions    = mdrunOptions.continuationOptions;
 
-    if (MASTER(cr))
-    {
-        if (!observablesHistory->energyHistory)
-        {
-            observablesHistory->energyHistory = std::make_unique<energyhistory_t>();
-        }
-        if (!observablesHistory->pullHistory)
-        {
-            observablesHistory->pullHistory = std::make_unique<PullHistory>();
-        }
-        /* Set the initial energy history */
-        energyOutput.fillEnergyHistory(observablesHistory->energyHistory.get());
-    }
-
-    const bool startingFromCheckpoint = false;
+    const bool                 startingFromCheckpoint = false;
     preparePrevStepPullCom(ir, mdatoms, state, state_global, cr, startingFromCheckpoint);
 
     // This must be prepared before the first stage of global
@@ -1895,18 +1927,6 @@ void gmx::legacy::Integrator::do_simple_md()
             fprintf(fplog,
                     "RMS relative constraint deviation after constraining: %.2e\n",
                     constr->rmsd());
-        }
-        if (EI_STATE_VELOCITY(ir->eI))
-        {
-            real temp = enerd->term[F_TEMP];
-            if (ir->eI != eiVV)
-            {
-                /* Result of Ekin averaged over velocities of -half
-                 * and +half step, while we only have -half step here.
-                 */
-                temp *= 2;
-            }
-            fprintf(fplog, "Initial temperature: %g K\n", temp);
         }
 
         char tbuf[20];
@@ -2003,6 +2023,14 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*forceSetup)();
     }
+    if (energyElementSetup)
+    {
+        (*energyElementSetup)();
+    }
+    if (trajectorySignallerSetup)
+    {
+        (*trajectorySignallerSetup)();
+    }
 
     // With the step manager, we will be setting last step at the end of the step,
     // and want to actually do a last step before stopping.
@@ -2032,11 +2060,6 @@ void gmx::legacy::Integrator::do_simple_md()
         if (domDecElementRun)
         {
             (*domDecElementRun)();
-        }
-
-        if (MASTER(cr) && do_log)
-        {
-            print_ebin_header(fplog, step, t); /* can we improve the information printed here? */
         }
 
         if (forceRun)
@@ -2102,26 +2125,14 @@ void gmx::legacy::Integrator::do_simple_md()
          * coordinates at time t. We must output all of this before
          * the update.
          */
-        const bool checkpointing = false;
-        const bool bSumEkinhOld  = false;
-        do_md_trajectory_writing(fplog, cr, nfile, fnm, step, step - inputrec->init_step, t,
-                                 ir, state, state_global, observablesHistory,
-                                 top_global, fr,
-                                 outf, energyOutput, ekind, f,
-                                 checkpointing,
-                                 bRerunMD, bLastStep,
-                                 mdrunOptions.writeConfout,
-                                 bSumEkinhOld);
+        if (trajectorySignallerRun)
+        {
+            (*trajectorySignallerRun)();
+        }
 
         stopHandler->setSignal();
 
         /* #########   START SECOND UPDATE STEP ################# */
-        /* Box is changed in update() when we do pressure coupling,
-         * but we should still use the old box for energy corrections and when
-         * writing it to the energy file, so it matches the trajectory files for
-         * the same timestep above. Make a copy in a separate array.
-         */
-        copy_mat(state->box, lastbox);
 
         dvdl_constr = 0;
 
@@ -2156,40 +2167,18 @@ void gmx::legacy::Integrator::do_simple_md()
         /* ################# END UPDATE STEP 2 ################# */
         /* #### We now have r(t+dt) and v(t+dt/2)  ############# */
 
-        if (bCalcEner)
+        /* Output stuff */
+        if (energyElementRun)
         {
-            /* #########  BEGIN PREPARING EDR OUTPUT  ###########  */
-            enerd->term[F_ETOT] = enerd->term[F_EPOT] + enerd->term[F_EKIN];
-            /* #########  END PREPARING EDR OUTPUT  ###########  */
+            (*energyElementRun)();
+        }
+        if (trajectoryWriterRun)
+        {
+            (*trajectoryWriterRun)();
         }
 
-        /* Output stuff */
         if (MASTER(cr))
         {
-            if (bCalcEner)
-            {
-                bool bDoDHDL       = false;
-                bool bCalcEnerStep = do_per_step(step, ir->nstcalcenergy);
-                energyOutput.addDataAtEnergyStep(bDoDHDL, bCalcEnerStep,
-                                                 t, mdatoms->tmass, enerd, state,
-                                                 ir->fepvals, ir->expandedvals, lastbox,
-                                                 shake_vir, force_vir, total_vir, pres,
-                                                 ekind, mu_tot, constr);
-            }
-            else
-            {
-                energyOutput.recordNonEnergyStep();
-            }
-
-            gmx_bool do_dr  = do_per_step(step, ir->nstdisreout);
-            gmx_bool do_or  = do_per_step(step, ir->nstorireout);
-
-            Awh     *awh = nullptr;
-            energyOutput.printStepToEnergyFile(mdoutf_get_fp_ene(outf), do_ene, do_dr, do_or,
-                                               do_log ? fplog : nullptr,
-                                               step, t,
-                                               eprNORMAL, fcd, groups, &(ir->opts), awh);
-
             if (do_per_step(step, ir->nstlog))
             {
                 if (fflush(fplog) != 0)
@@ -2260,10 +2249,18 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*computeGlobalsElementTeardown)();
     }
-
-    /* Closing TNG files can include compressing data. Therefore it is good to do that
-     * before stopping the time measurements. */
-    mdoutf_tng_close(outf);
+    if (energyElementTeardown)
+    {
+        (*energyElementTeardown)();
+    }
+    if (trajectoryWriterTeardown)
+    {
+        (*trajectoryWriterTeardown)();
+    }
+    if (trajectorySignallerTeardown)
+    {
+        (*trajectorySignallerTeardown)();
+    }
 
     /* Stop measuring walltime */
     walltime_accounting_end_time(walltime_accounting);
@@ -2273,18 +2270,6 @@ void gmx::legacy::Integrator::do_simple_md()
         /* Tell the PME only node to finish */
         gmx_pme_send_finish(cr);
     }
-
-    if (MASTER(cr))
-    {
-        if (ir->nstcalcenergy > 0)
-        {
-            Awh *awh = nullptr;
-            energyOutput.printStepToEnergyFile(mdoutf_get_fp_ene(outf), FALSE, FALSE, FALSE,
-                                               fplog, step, t,
-                                               eprAVER, fcd, groups, &(ir->opts), awh);
-        }
-    }
-    done_mdoutf(outf);
 
     if (forceTeardown)
     {

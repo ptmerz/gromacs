@@ -39,8 +39,8 @@
 
 #include <stdio.h>
 
-#include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdlib/mdoutf.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/timing/wallcycle.h"
 
 struct gmx_ekindata_t;
@@ -84,5 +84,66 @@ do_md_trajectory_writing(FILE                     *fplog,
                          gmx_bool                  bSumEkinhOld
                          );
 
+namespace gmx
+{
+class TrajectorySignaller : public IIntegratorElement
+{
+    public:
+        explicit TrajectorySignaller(
+            StepAccessorPtr stepAccessor,
+            int nstxout, int nstvout, int nstfout, int nstxout_compressed);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        void registerCallback(TrajectorySignallerCallbackPtr callback);
+
+    private:
+        StepAccessorPtr stepAccessor_;
+        const int       nstxout_;
+        const int       nstvout_;
+        const int       nstfout_;
+        const int       nstxout_compressed_;
+
+        std::vector<TrajectorySignallerCallbackPtr> callbacks_;
+
+        void run();
+};
+
+class TrajectoryWriter : public IIntegratorElement
+{
+    public:
+        TrajectoryWriter(
+            FILE *fplog, int nfile, const t_filenm fnm[],
+            const MdrunOptions &mdrunOptions,
+            const t_commrec *cr,
+            gmx::IMDOutputProvider *outputProvider,
+            const t_inputrec *ir, gmx_mtop_t *top_global,
+            const gmx_output_env_t *oenv, gmx_wallcycle_t wcycle);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        void registerClient(
+            TrajectoryWriterCallbackPtr setupCallback,
+            TrajectoryWriterCallbackPtr runTrajectoryCallback,
+            TrajectoryWriterCallbackPtr runEnergyCallback,
+            TrajectoryWriterCallbackPtr teardownCallback);
+
+    private:
+        std::vector<TrajectoryWriterCallbackPtr> setupCallbacks_;
+        std::vector<TrajectoryWriterCallbackPtr> runTrajectoryCallbacks_;
+        std::vector<TrajectoryWriterCallbackPtr> runEnergyCallbacks_;
+        std::vector<TrajectoryWriterCallbackPtr> teardownCallbacks_;
+
+        gmx_mdoutf *outf_;
+
+        void setup();
+        void write();
+        void teardown();
+};
+}
 
 #endif

@@ -46,6 +46,7 @@
 #include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/math/veccompare.h"
+#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdtypes/awh_history.h"
 #include "gromacs/mdtypes/df_history.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -276,4 +277,116 @@ void preserve_box_shape(const t_inputrec *ir, matrix box_rel, matrix box)
         const int ndim = ir->epct == epctSEMIISOTROPIC ? 2 : 3;
         do_box_rel(ndim, ir->deform, box_rel, box, false);
     }
+}
+
+namespace gmx
+{
+MicroState::MicroState(
+        StepAccessorPtr           stepAccessor,
+        TimeAccessorPtr           timeAccessor,
+        int                       natoms,
+        FILE                     *fplog,
+        const t_commrec          *cr,
+        t_state                  *globalState,
+        t_state                  *localState,
+        ArrayRefWithPadding<RVec> f,
+        int                       nstxout,
+        int                       nstvout,
+        int                       nstfout,
+        int                       nstxout_compressed) :
+    natoms_(natoms),
+    nstxout_(nstxout),
+    nstvout_(nstvout),
+    nstfout_(nstfout),
+    nstxout_compressed_(nstxout_compressed),
+    stepAccessor_(std::move(stepAccessor)),
+    timeAccessor_(std::move(timeAccessor)),
+    localStateBackup_(nullptr),
+    fplog_(fplog),
+    cr_(cr),
+    globalState_(globalState),
+    localState_(localState),
+    f_(std::move(f))
+{}
+
+void MicroState::write(gmx_mdoutf_t outf)
+{
+    auto currentStep = (*stepAccessor_)();
+    auto currentTime = (*timeAccessor_)();
+
+    // Only used for CPT - turned off for now
+    ObservablesHistory *observablesHistory = nullptr;
+
+    // Set flags
+    int mdof_flags = 0;
+    if (do_per_step(currentStep, nstxout_))
+    {
+        mdof_flags |= MDOF_X;
+    }
+    if (do_per_step(currentStep, nstvout_))
+    {
+        mdof_flags |= MDOF_V;
+    }
+    if (do_per_step(currentStep, nstfout_))
+    {
+        mdof_flags |= MDOF_F;
+    }
+    if (do_per_step(currentStep, nstxout_compressed_))
+    {
+        mdof_flags |= MDOF_X_COMPRESSED;
+    }
+    if (do_per_step(currentStep, mdoutf_get_tng_box_output_interval(outf)))
+    {
+        mdof_flags |= MDOF_BOX;
+    }
+    if (do_per_step(currentStep, mdoutf_get_tng_lambda_output_interval(outf)))
+    {
+        mdof_flags |= MDOF_LAMBDA;
+    }
+    if (do_per_step(currentStep, mdoutf_get_tng_compressed_box_output_interval(outf)))
+    {
+        mdof_flags |= MDOF_BOX_COMPRESSED;
+    }
+    if (do_per_step(currentStep, mdoutf_get_tng_compressed_lambda_output_interval(outf)))
+    {
+        mdof_flags |= MDOF_LAMBDA_COMPRESSED;
+    }
+
+    mdoutf_write_to_trajectory_files(
+            fplog_, cr_, outf, mdof_flags, natoms_,
+            currentStep, currentTime, localStateBackup_, globalState_, observablesHistory, f_.paddedArrayRef());
+}
+
+TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterSetup()
+{
+    return nullptr;
+}
+
+TrajectoryWriterCallbackPtr MicroState::registerTrajectoryRun()
+{
+    return std::make_unique<TrajectoryWriterCallback>(
+            std::bind(&MicroState::write, this, std::placeholders::_1));
+}
+
+TrajectoryWriterCallbackPtr MicroState::registerEnergyRun()
+{
+    return nullptr;
+}
+
+TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterTeardown()
+{
+    return nullptr;
+}
+
+TrajectorySignallerCallbackPtr MicroState::getTrajectorySignallerCallback()
+{
+    return std::make_unique<TrajectorySignallerCallback>(
+            std::bind(&MicroState::writeTrajectoryThisStep, this));
+}
+
+void MicroState::writeTrajectoryThisStep()
+{
+    localStateBackup_ = new t_state(*localState_);
+}
+
 }

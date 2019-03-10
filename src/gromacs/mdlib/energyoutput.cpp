@@ -54,8 +54,10 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/mdlib/compute_io.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/ebin.h"
+#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/mdebin_bar.h"
 #include "gromacs/mdlib/mdrun.h"
 #include "gromacs/mdlib/sim_util.h"
@@ -1837,6 +1839,211 @@ LoggingSignallerCallbackPtr EnergySignaller::getLoggingCallback()
 {
     return std::make_unique<LastStepCallback>(
             [this](){this->isLoggingStep_ = true; });
+}
+
+EnergyElement::EnergyElement(
+        StepAccessorPtr stepAccessor,
+        TimeAccessorPtr timeAccessor,
+        gmx_mtop_t     *mtop,
+        t_inputrec     *ir,
+        MDAtoms        *mdAtoms,
+        t_state        *localState,
+        gmx_enerdata_t *enerd,
+        tensor          force_vir,
+        tensor          shake_vir,
+        tensor          total_vir,
+        tensor          pres,
+        gmx_ekindata_t *ekind,
+        Constraints    *constr,
+        rvec            mu_tot,
+        FILE           *fplog,
+        t_fcdata       *fcd,
+        bool            isMaster) :
+    isMaster_(isMaster),
+    isEnergyCalculationStep_(false),
+    writeEnergy_(false),
+    isFreeEnergyCalculationStep_(false),
+    writeLog_(false),
+    isLastStep_(false),
+    stepAccessor_(std::move(stepAccessor)),
+    timeAccessor_(std::move(timeAccessor)),
+    inputrec_(ir),
+    top_global_(mtop),
+    mdAtoms_(mdAtoms),
+    localState_(localState),
+    enerd_(enerd),
+    force_vir_(force_vir),
+    shake_vir_(shake_vir),
+    total_vir_(total_vir),
+    pres_(pres),
+    ekind_(ekind),
+    constr_(constr),
+    mu_tot_(mu_tot),
+    fplog_(fplog),
+    fcd_(fcd),
+    groups_(&mtop->groups)
+{}
+
+void EnergyElement::setup(gmx_mdoutf *outf)
+{
+    energyOutput_.prepare(mdoutf_get_fp_ene(outf), top_global_, inputrec_, mdoutf_get_fp_dhdl(outf));
+
+    if (isMaster_)
+    {
+        // TODO: This probably doesn't really belong here... but we have all we need in this element,
+        //       so we'll leave it here for now!
+        double io = compute_io(inputrec_, top_global_->natoms, groups_, energyOutput_.numEnergyTerms(), 1);
+        if ((io > 2000) && isMaster_)
+        {
+            fprintf(stderr,
+                    "\nWARNING: This run will generate roughly %.0f Mb of data\n\n",
+                    io);
+        }
+        real temp = enerd_->term[F_TEMP];
+        if (inputrec_->eI != eiVV)
+        {
+            /* Result of Ekin averaged over velocities of -half
+             * and +half step, while we only have -half step here.
+             */
+            temp *= 2;
+        }
+        fprintf(fplog_, "Initial temperature: %g K\n", temp);
+    }
+}
+
+void EnergyElement::step()
+{
+    if (isEnergyCalculationStep_ || writeEnergy_)
+    {
+        enerd_->term[F_ETOT] = enerd_->term[F_EPOT] + enerd_->term[F_EKIN];
+        energyOutput_.addDataAtEnergyStep(
+                isFreeEnergyCalculationStep_, isEnergyCalculationStep_,
+                (*timeAccessor_)(), mdAtoms_->mdatoms()->tmass, enerd_, localState_,
+                inputrec_->fepvals, inputrec_->expandedvals,
+                localState_->box,  // TODO: was lastbox - might be a problem when box changes!
+                shake_vir_, force_vir_, total_vir_, pres_,
+                ekind_, mu_tot_, constr_);
+    }
+    else
+    {
+        energyOutput_.recordNonEnergyStep();
+    }
+}
+
+void EnergyElement::write(gmx_mdoutf *outf, bool isTeardown)
+{
+    auto step = (*stepAccessor_)();
+
+    if (!isTeardown)
+    {
+        bool do_dr  = do_per_step(step, inputrec_->nstdisreout);
+        bool do_or  = do_per_step(step, inputrec_->nstorireout);
+
+        Awh *awh = nullptr;
+        energyOutput_.printStepToEnergyFile(
+                mdoutf_get_fp_ene(outf), writeEnergy_, do_dr, do_or,
+                writeLog_ || isLastStep_ ? fplog_ : nullptr,
+                step, (*timeAccessor_)(),
+                eprNORMAL, fcd_, groups_, &(inputrec_->opts), awh);
+    }
+    else
+    {
+        Awh *awh = nullptr;
+        energyOutput_.printStepToEnergyFile(
+                mdoutf_get_fp_ene(outf), false, false, false,
+                fplog_, step, (*timeAccessor_)(),
+                eprAVER, fcd_, groups_, &(inputrec_->opts), awh);
+    }
+    isEnergyCalculationStep_     = false;
+    writeEnergy_                 = false;
+    isFreeEnergyCalculationStep_ = false;
+    writeLog_                    = false;
+}
+
+ElementFunctionTypePtr EnergyElement::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr EnergyElement::registerRun()
+{
+    if (isMaster_)
+    {
+        return std::make_unique<ElementFunctionType>(
+                std::bind(&EnergyElement::step, this));
+    }
+    return nullptr;
+}
+
+ElementFunctionTypePtr EnergyElement::registerTeardown()
+{
+    return nullptr;
+}
+
+TrajectoryWriterCallbackPtr EnergyElement::registerTrajectoryWriterSetup()
+{
+    return std::make_unique<TrajectoryWriterCallback>(
+            std::bind(&EnergyElement::setup, this, std::placeholders::_1));
+}
+
+TrajectoryWriterCallbackPtr EnergyElement::registerTrajectoryRun()
+{
+    return nullptr;
+}
+
+TrajectoryWriterCallbackPtr EnergyElement::registerEnergyRun()
+{
+    if (isMaster_)
+    {
+        return std::make_unique<TrajectoryWriterCallback>(
+                std::bind(&EnergyElement::write, this, std::placeholders::_1, false));
+    }
+    return nullptr;
+}
+
+TrajectoryWriterCallbackPtr EnergyElement::registerTrajectoryWriterTeardown()
+{
+    if (inputrec_->nstcalcenergy > 0 && isMaster_)
+    {
+        return std::make_unique<TrajectoryWriterCallback>(
+                std::bind(&EnergyElement::write, this, std::placeholders::_1, true));
+    }
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr EnergyElement::getCalculateEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->isEnergyCalculationStep_ = true; });
+}
+
+EnergySignallerCallbackPtr EnergyElement::getWriteEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->writeEnergy_ = true; });
+}
+
+EnergySignallerCallbackPtr EnergyElement::getCalculateFreeEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->isFreeEnergyCalculationStep_ = true; });
+}
+
+LastStepCallbackPtr EnergyElement::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            [this](){this->isLastStep_ = false; });
+}
+
+EnergySignallerCallbackPtr EnergyElement::getCalculateVirialCallback()
+{
+    return nullptr;
+}
+
+LoggingSignallerCallbackPtr EnergyElement::getLoggingCallback()
+{
+    return std::make_unique<LoggingSignallerCallback>(
+            [this](){this->writeLog_ = true; });
 }
 
 } // namespace gmx
