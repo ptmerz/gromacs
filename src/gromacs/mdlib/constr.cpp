@@ -65,6 +65,8 @@
 #include "gromacs/mdlib/mdrun.h"
 #include "gromacs/mdlib/settle.h"
 #include "gromacs/mdlib/shake.h"
+#include "gromacs/mdlib/sim_util.h"
+#include "gromacs/mdlib/update.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -1245,6 +1247,174 @@ bool inter_charge_group_settles(const gmx_mtop_t &mtop)
     }
 
     return bInterCG;
+}
+
+ConstrainCoordinates::ConstrainCoordinates(
+        StepAccessorPtr stepAccessor, const t_mdatoms *mdatoms,
+        t_state *localState, Update *upd,
+        tensor shake_vir, Constraints *constr,
+        FILE *fplog, const t_inputrec *inputrec) :
+    stepAccessor_(std::move(stepAccessor)),
+    localState_(localState),
+    upd_(upd),
+    shake_vir_(shake_vir),
+    constr_(constr)
+{
+    GMX_ASSERT(stepAccessor_, "ConstrainCoordinates constructor: stepAccessor can not be nullptr");
+
+    // TODO: Include a way to turn initial constraining on / off
+    if (constr && (localState_->flags & (1 << estV)))
+    {
+        do_constrain_first(fplog, constr, inputrec, mdatoms, localState);
+    }
+}
+
+void ConstrainCoordinates::run()
+{
+    auto step        = (*stepAccessor_)();
+    real dvdl_constr = 0;
+
+    constrain_coordinates(
+            step, &dvdl_constr, localState_,
+            shake_vir_, upd_, constr_,
+            calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
+}
+
+ElementFunctionTypePtr ConstrainCoordinates::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr ConstrainCoordinates::registerRun()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &ConstrainCoordinates::run, this));
+}
+ElementFunctionTypePtr ConstrainCoordinates::registerTeardown()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ConstrainCoordinates::getCalculateEnergyCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ConstrainCoordinates::getCalculateVirialCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->calculateVirialThisStep_ = true; }));
+}
+
+EnergySignallerCallbackPtr ConstrainCoordinates::getWriteEnergyCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->writeEnergyThisStep_ = true; }));
+}
+
+EnergySignallerCallbackPtr ConstrainCoordinates::getCalculateFreeEnergyCallback()
+{
+    return nullptr;
+}
+
+LoggingSignallerCallbackPtr ConstrainCoordinates::getLoggingCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->writeLogThisStep_ = true; }));
+}
+
+ConstrainVelocities::ConstrainVelocities(
+        StepAccessorPtr stepAccessor, t_state *localState, tensor shake_vir, Constraints *constr) :
+    stepAccessor_(std::move(stepAccessor)),
+    localState_(localState),
+    shake_vir_(shake_vir),
+    constr_(constr)
+{
+    GMX_ASSERT(stepAccessor_, "ConstrainVelocities constructor: stepAccessor can not be nullptr");
+}
+
+void ConstrainVelocities::run()
+{
+    auto step        = (*stepAccessor_)();
+    real dvdl_constr = 0;
+
+    constrain_velocities(
+            step, &dvdl_constr, localState_,
+            shake_vir_, constr_,
+            calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
+}
+
+ElementFunctionTypePtr ConstrainVelocities::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr ConstrainVelocities::registerRun()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &ConstrainVelocities::run, this));
+}
+ElementFunctionTypePtr ConstrainVelocities::registerTeardown()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ConstrainVelocities::getCalculateEnergyCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ConstrainVelocities::getCalculateVirialCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->calculateVirialThisStep_ = true; }));
+}
+
+EnergySignallerCallbackPtr ConstrainVelocities::getWriteEnergyCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->writeEnergyThisStep_ = true; }));
+}
+
+EnergySignallerCallbackPtr ConstrainVelocities::getCalculateFreeEnergyCallback()
+{
+    return nullptr;
+}
+
+LoggingSignallerCallbackPtr ConstrainVelocities::getLoggingCallback()
+{
+    if (!constr_)
+    {
+        return nullptr;
+    }
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->writeLogThisStep_ = true; }));
 }
 
 }  // namespace gmx

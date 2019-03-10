@@ -49,6 +49,7 @@
 #include <cstdio>
 
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -73,6 +74,7 @@ class t_state;
 
 namespace gmx
 {
+class Update;
 
 //! Describes supported flavours of constrained updates.
 enum class ConstraintVariable : int
@@ -286,6 +288,82 @@ bool inter_charge_group_constraints(const gmx_mtop_t &mtop);
 
 /*! \brief Returns whether there are inter charge group settles */
 bool inter_charge_group_settles(const gmx_mtop_t &mtop);
+
+class ConstrainCoordinates :
+    public IIntegratorElement, public ILoggingSignallerClient, public IEnergySignallerClient
+{
+    public:
+        ConstrainCoordinates(
+            StepAccessorPtr stepAccessor, const t_mdatoms *mdatoms,
+            t_state *localState, Update *upd,
+            tensor shake_vir, Constraints *constr,
+            FILE *fplog, const t_inputrec *inputrec);
+
+        // IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateVirialCallback() override;
+        EnergySignallerCallbackPtr getWriteEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() override;
+
+        LoggingSignallerCallbackPtr getLoggingCallback() override;
+
+    private:
+        StepAccessorPtr stepAccessor_;
+
+        bool            calculateVirialThisStep_;
+        bool            writeLogThisStep_;
+        bool            writeEnergyThisStep_;
+
+
+        // TODO: Rethink access to these
+        t_state     *localState_;
+        Update      *upd_;
+        rvec        *shake_vir_;
+        Constraints *constr_;
+
+        // Run the update
+        void run();
+};
+
+class ConstrainVelocities :
+    public IIntegratorElement, public ILoggingSignallerClient, public IEnergySignallerClient
+{
+    public:
+        ConstrainVelocities(
+            StepAccessorPtr stepAccessor, t_state *localState, tensor shake_vir, Constraints *constr);
+
+        // IIntegratorElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateVirialCallback() override;
+        EnergySignallerCallbackPtr getWriteEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() override;
+
+        LoggingSignallerCallbackPtr getLoggingCallback() override;
+
+    private:
+        StepAccessorPtr stepAccessor_;
+
+        bool            calculateVirialThisStep_;
+        bool            writeLogThisStep_;
+        bool            writeEnergyThisStep_;
+
+
+        // TODO: Rethink access to these
+        t_state     *localState_;
+        rvec        *shake_vir_;
+        Constraints *constr_;
+
+        // Run the update
+        void run();
+};
 
 }  // namespace gmx
 

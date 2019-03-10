@@ -1412,8 +1412,9 @@ void update_tcouple(int64_t           step,
  * \param[out] startAtom    The start of the atom range
  * \param[out] endAtom      The end of the atom range, note that this is in general not a multiple of the SIMD width
  */
-static void getThreadAtomRange(int numThreads, int threadIndex, int numAtoms,
-                               int *startAtom, int *endAtom)
+void gmx::UpdateStep::getThreadAtomRange(
+        int numThreads, int threadIndex, int numAtoms,
+        int *startAtom, int *endAtom)
 {
 #if GMX_HAVE_SIMD_UPDATE
     constexpr int blockSize = GMX_SIMD_REAL_WIDTH;
@@ -1571,7 +1572,7 @@ update_sd_second_half(int64_t           step,
             try
             {
                 int start_th, end_th;
-                getThreadAtomRange(nth, th, homenr, &start_th, &end_th);
+                gmx::UpdateStep::getThreadAtomRange(nth, th, homenr, &start_th, &end_th);
 
                 doSDUpdateGeneral<SDUpdate::FrictionAndNoiseOnly>
                     (*upd->sd(),
@@ -1832,7 +1833,7 @@ void update_coords(int64_t                             step,
         try
         {
             int start_th, end_th;
-            getThreadAtomRange(nth, th, homenr, &start_th, &end_th);
+            gmx::UpdateStep::getThreadAtomRange(nth, th, homenr, &start_th, &end_th);
 
             const rvec *x_rvec  = state->x.rvec_array();
             rvec       *xp_rvec = upd->xp()->rvec_array();
@@ -1952,3 +1953,354 @@ extern gmx_bool update_randomize_velocities(const t_inputrec *ir, int64_t step, 
     }
     return FALSE;
 }
+
+namespace gmx
+{
+
+UpdateStep::UpdateStep(
+        std::vector < std::unique_ptr < IUpdateElement>> elements,
+        const t_mdatoms                                 *mdatoms,
+        gmx_wallcycle                                   *wcycle) :
+    elements_(std::move(elements)),
+    mdatoms_(mdatoms),
+    wcycle_(wcycle)
+{
+    for (auto &element : elements_)
+    {
+        auto setup = element->registerSetup();
+        if (setup)
+        {
+            setupFunctions_.emplace_back(std::move(setup));
+        }
+
+        auto run = element->registerUpdateRun();
+        if (run)
+        {
+            runFunctions_.emplace_back(std::move(run));
+        }
+
+        auto teardown = element->registerTeardown();
+        if (teardown)
+        {
+            teardownFunctions_.emplace_back(std::move(teardown));
+        }
+    }
+}
+
+void UpdateStep::setup()
+{
+    for (const auto &setupFct : this->setupFunctions_)
+    {
+        (*setupFct)();
+    }
+}
+void UpdateStep::run()
+{
+    wallcycle_start(wcycle_, ewcUPDATE);
+    // TODO: Does this ever change?
+    int nth = gmx_omp_nthreads_get(emntUpdate);
+#pragma omp parallel for num_threads(nth) schedule(static)
+    for (int th = 0; th < nth; th++)
+    {
+        int start_th, end_th;
+        getThreadAtomRange(nth, th, mdatoms_->homenr, &start_th, &end_th);
+
+        for (const auto &runFct : this->runFunctions_)
+        {
+            (*runFct)(start_th, end_th);
+        }
+    }
+    wallcycle_stop(wcycle_, ewcUPDATE);
+}
+void UpdateStep::teardown()
+{
+    for (const auto &teardownFct : this->teardownFunctions_)
+    {
+        (*teardownFct)();
+    }
+}
+
+ElementFunctionTypePtr UpdateStep::registerSetup()
+{
+    if (setupFunctions_.empty())
+    {
+        return nullptr;
+    }
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&UpdateStep::setup, this));
+}
+ElementFunctionTypePtr UpdateStep::registerRun()
+{
+    if (runFunctions_.empty())
+    {
+        return nullptr;
+    }
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&UpdateStep::run, this));
+}
+ElementFunctionTypePtr UpdateStep::registerTeardown()
+{
+    if (teardownFunctions_.empty())
+    {
+        return nullptr;
+    }
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&UpdateStep::teardown, this));
+}
+
+void UpdateStepBuilder::addUpdateElement(std::unique_ptr<gmx::IUpdateElement> updateElement)
+{
+    updateElements_.emplace_back(std::move(updateElement));
+}
+
+std::unique_ptr<UpdateStep> UpdateStepBuilder::build(const t_mdatoms *mdatoms, gmx_wallcycle *wcycle)
+{
+    return std::unique_ptr<UpdateStep>(new UpdateStep(
+                                               std::move(updateElements_), mdatoms, wcycle));
+}
+
+UpdateVelocity::UpdateVelocity(
+        real timestep, const rvec *nAccelerationGroups,
+        const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
+        t_state *localState, ArrayRefWithPadding<RVec> f) :
+    timestep_(timestep),
+    mdatoms_(mdatoms),
+    nAccelerationGroups_(nAccelerationGroups),
+    nFreezeGroups_(nFreezeGroups),
+    localState_(localState),
+    f_(std::move(f))
+{}
+
+void UpdateVelocity::runPartial(int start, int nrend)
+{
+    // For now, no extended system dynamics implemented
+    const bool bExtended = false;
+    const real veta      = 0.0;
+    const real alpha     = 0.0;
+
+    auto       v = localState_->v.rvec_array();
+    const auto f = as_rvec_array(f_.unpaddedArrayRef().data());
+
+    do_update_vv_vel(
+            start, nrend,
+            2*timestep_, nAccelerationGroups_, nFreezeGroups_, mdatoms_->invmass,
+            mdatoms_->ptype, mdatoms_->cFREEZE, mdatoms_->cACC,
+            v, f, bExtended, veta, alpha);
+}
+
+void UpdateVelocity::run()
+{
+    runPartial(0, mdatoms_->homenr);
+}
+
+ElementFunctionTypePtr UpdateVelocity::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr UpdateVelocity::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &UpdateVelocity::run, this));
+}
+ElementFunctionTypePtr UpdateVelocity::registerTeardown()
+{
+    return nullptr;
+}
+UpdateRunFunctionTypePtr UpdateVelocity::registerUpdateRun()
+{
+    return std::make_unique<UpdateRunFunctionType>(std::bind(
+                                                           &UpdateVelocity::runPartial, this,
+                                                           std::placeholders::_1, std::placeholders::_2));
+}
+
+UpdatePosition::UpdatePosition(
+        real timestep, const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
+        t_state *localState, Update *upd) :
+    timestep_(timestep),
+    mdatoms_(mdatoms),
+    nFreezeGroups_(nFreezeGroups),
+    localState_(localState),
+    upd_(upd)
+{}
+
+void UpdatePosition::runPartial(int start, int nrend)
+{
+    // For now, no extended system dynamics implemented
+    const bool bExtended = false;
+    const real veta      = 0.0;
+
+    const auto x      = localState_->x.rvec_array();
+    auto       xprime = upd_->xp()->rvec_array();
+    const auto v      = localState_->v.rvec_array();
+
+    do_update_vv_pos(
+            start, nrend,
+            timestep_, nFreezeGroups_, mdatoms_->ptype, mdatoms_->cFREEZE,
+            x, xprime, v, bExtended, veta);
+}
+
+void UpdatePosition::run()
+{
+    runPartial(0, mdatoms_->homenr);
+}
+
+ElementFunctionTypePtr UpdatePosition::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr UpdatePosition::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &UpdatePosition::run, this));
+}
+ElementFunctionTypePtr UpdatePosition::registerTeardown()
+{
+    return nullptr;
+}
+UpdateRunFunctionTypePtr UpdatePosition::registerUpdateRun()
+{
+    return std::make_unique<UpdateRunFunctionType>(std::bind(
+                                                           &UpdatePosition::runPartial, this,
+                                                           std::placeholders::_1, std::placeholders::_2));
+}
+
+UpdateLeapfrog::UpdateLeapfrog(
+        real timestep, StepAccessorPtr stepAccessor,
+        const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
+        t_state *localState, ArrayRefWithPadding<RVec> f, Update *upd) :
+    timestep_(timestep),
+    stepAccessor_(std::move(stepAccessor)),
+    inputrec_(inputrec),
+    mdatoms_(mdatoms),
+    ekind_(ekind),
+    localState_(localState),
+    f_(std::move(f)),
+    upd_(upd)
+{
+    GMX_ASSERT(stepAccessor_, "UpdateLeapfrog constructor: stepAccessor can not be nullptr");
+}
+
+void UpdateLeapfrog::runPartial(int start, int nrend)
+{
+    const rvec  * M              = nullptr;
+    const double *nosehoover_vxi = nullptr;
+
+    const auto    x   = localState_->x.rvec_array();
+    auto          xp  = upd_->xp()->rvec_array();
+    auto          v   = localState_->v.rvec_array();
+    const auto    f   = as_rvec_array(f_.unpaddedArrayRef().data());
+    const auto    box = localState_->box;
+
+    do_update_md(
+            start, nrend, (*stepAccessor_)(), timestep_,
+            inputrec_, mdatoms_, ekind_, box,
+            x, xp, v, f,
+            nosehoover_vxi, M);
+}
+
+void UpdateLeapfrog::run()
+{
+    runPartial(0, mdatoms_->homenr);
+}
+
+ElementFunctionTypePtr UpdateLeapfrog::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr UpdateLeapfrog::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &UpdateLeapfrog::run, this));
+}
+UpdateRunFunctionTypePtr UpdateLeapfrog::registerUpdateRun()
+{
+    return std::make_unique<UpdateRunFunctionType>(std::bind(
+                                                           &UpdateLeapfrog::runPartial, this,
+                                                           std::placeholders::_1, std::placeholders::_2));
+}
+ElementFunctionTypePtr UpdateLeapfrog::registerTeardown()
+{
+    return nullptr;
+}
+
+FinishUpdateElement::FinishUpdateElement(
+        const t_mdatoms *mdatoms, t_state *localState, Update *upd,
+        const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr) :
+    mdatoms_(mdatoms),
+    localState_(localState),
+    upd_(upd),
+    inputrec_(inputrec),
+    wcycle_(wcycle),
+    constr_(constr)
+{}
+
+void FinishUpdateElement::run()
+{
+    const t_graph *graph = nullptr;
+    t_nrnb        *nrnb  = nullptr;
+    finish_update(
+            inputrec_, mdatoms_, localState_,
+            graph, nrnb, wcycle_, upd_, constr_);
+}
+
+ElementFunctionTypePtr FinishUpdateElement::registerSetup()
+{
+    return nullptr;
+}
+ElementFunctionTypePtr FinishUpdateElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &FinishUpdateElement::run, this));
+}
+ElementFunctionTypePtr FinishUpdateElement::registerTeardown()
+{
+    return nullptr;
+}
+
+ResetVForVV::ResetVForVV(t_state *localState) :
+    firstStep_(true),
+    vbuf_(nullptr),
+    localState_(localState)
+{}
+
+void ResetVForVV::setup()
+{
+    /* if using velocity verlet with full time step Ekin,
+     * take the first half step only to compute the
+     * virial for the first step. From there,
+     * revert back to the initial coordinates
+     * so that the input is actually the initial step.
+     */
+    snew(vbuf_, localState_->natoms);
+    copy_rvecn(localState_->v.rvec_array(), vbuf_, 0, localState_->natoms);
+    /* should make this better for parallelizing? */
+}
+
+void ResetVForVV::run()
+{
+    if (firstStep_)
+    {
+        /* if it's the initial step, we performed this first step just to get the constraint virial */
+        copy_rvecn(vbuf_, localState_->v.rvec_array(), 0, localState_->natoms);
+        sfree(vbuf_);
+        firstStep_ = false;
+    }
+}
+
+ElementFunctionTypePtr ResetVForVV::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &ResetVForVV::setup, this));
+}
+
+ElementFunctionTypePtr ResetVForVV::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(std::bind(
+                                                         &ResetVForVV::run, this));
+}
+
+ElementFunctionTypePtr ResetVForVV::registerTeardown()
+{
+    return nullptr;
+}
+}  // namespace gmx

@@ -39,6 +39,7 @@
 
 #include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/arrayref.h"
@@ -89,6 +90,187 @@ class Update
         class Impl;
         //! Implementation object.
         PrivateImplPointer<Impl> impl_;
+};
+
+class UpdateStep : public IIntegratorElement
+{
+    public:
+        // make this an element
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        static void getThreadAtomRange(
+            int numThreads, int threadIndex, int numAtoms,
+            int *startAtom, int *endAtom);
+
+        friend class UpdateStepBuilder;
+
+    private:
+        UpdateStep(
+            std::vector < std::unique_ptr < IUpdateElement>> elements,
+            const t_mdatoms                                 *mdatoms,
+            gmx_wallcycle                                   *wcycle);
+
+        std::vector < std::unique_ptr < IUpdateElement>> elements_;
+
+        std::vector<ElementFunctionTypePtr>   setupFunctions_;
+        std::vector<UpdateRunFunctionTypePtr> runFunctions_;
+        std::vector<ElementFunctionTypePtr>   teardownFunctions_;
+
+        void setup();
+        void run();
+        void teardown();
+
+        // TODO: Rethink access to these
+        const t_mdatoms *mdatoms_;
+        gmx_wallcycle   *wcycle_;
+};
+
+class UpdateStepBuilder
+{
+    public:
+        void addUpdateElement(std::unique_ptr<IUpdateElement> updateElement);
+        std::unique_ptr<UpdateStep> build(const t_mdatoms *mdatoms, gmx_wallcycle *wcycle);
+
+    private:
+        std::vector < std::unique_ptr < IUpdateElement>> updateElements_;
+};
+
+class UpdateVelocity : public IUpdateElement
+{
+    public:
+        UpdateVelocity(
+            real timestep, const rvec *nAccelerationGroups,
+            const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
+            t_state *localState, ArrayRefWithPadding<RVec> f);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        UpdateRunFunctionTypePtr registerUpdateRun() override;
+
+    private:
+        real timestep_;
+
+        // TODO: Rethink access to these
+        const t_mdatoms          *mdatoms_;
+        const rvec               *nAccelerationGroups_;
+        const ivec               *nFreezeGroups_;
+        t_state                  *localState_;
+        ArrayRefWithPadding<RVec> f_;
+
+        // Run the update
+        void runPartial(int start, int nrend);
+        void run();
+};
+
+class UpdatePosition : public IUpdateElement
+{
+    public:
+        UpdatePosition(
+            real timestep, const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
+            t_state *localState, Update *upd);
+
+        // IUpdateElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        UpdateRunFunctionTypePtr registerUpdateRun() override;
+
+    private:
+        real timestep_;
+
+        // TODO: Rethink access to these
+        const t_mdatoms *mdatoms_;
+        const ivec      *nFreezeGroups_;
+        t_state         *localState_;
+        Update          *upd_;
+
+        // Run the update
+        void runPartial(int start, int nrend);
+        void run();
+};
+
+class UpdateLeapfrog : public IUpdateElement
+{
+    public:
+        UpdateLeapfrog(
+            real timestep, StepAccessorPtr stepAccessor,
+            const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
+            t_state *localState, ArrayRefWithPadding<RVec> f, Update *upd);
+
+        // IUpdateElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        UpdateRunFunctionTypePtr registerUpdateRun() override;
+
+    private:
+        real            timestep_;
+        StepAccessorPtr stepAccessor_;
+
+        // TODO: Rethink access to these
+        const t_inputrec         *inputrec_;
+        const t_mdatoms          *mdatoms_;
+        const gmx_ekindata_t     *ekind_;
+        t_state                  *localState_;
+        ArrayRefWithPadding<RVec> f_;
+        Update                   *upd_;
+
+        // Run the update
+        void runPartial(int start, int nrend);
+        void run();
+};
+
+// This does mainly copy xp -> x - will be taken care of implicitly by new data model.
+class FinishUpdateElement : public IIntegratorElement
+{
+    public:
+        FinishUpdateElement(
+            const t_mdatoms *mdatoms, t_state *localState, Update *upd,
+            const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr);
+
+        // IUpdateElement functions
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+    private:
+        // TODO: Rethink access to these
+        const t_mdatoms  *mdatoms_;
+        t_state          *localState_;
+        Update           *upd_;
+        const t_inputrec *inputrec_;
+        gmx_wallcycle    *wcycle_;
+        Constraints      *constr_;
+
+        // Run the update
+        void run();
+};
+
+// This is something we should probablye get rid of by reshuffeling the elements
+// of VV in a smarter way... Needed for now to reproduce do_md().
+class ResetVForVV : public IIntegratorElement
+{
+    public:
+        explicit ResetVForVV(t_state *localState);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+    private:
+        bool  firstStep_;
+        rvec *vbuf_;
+
+        void setup();
+        void run();
+
+        t_state *localState_;
 };
 
 }; // namespace gmx

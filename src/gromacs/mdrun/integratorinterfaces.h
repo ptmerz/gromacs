@@ -71,6 +71,14 @@ class IIntegratorElement
         virtual ~IIntegratorElement() = default;
 };
 
+typedef std::function<void(int, int)> UpdateRunFunctionType;
+typedef std::unique_ptr<UpdateRunFunctionType> UpdateRunFunctionTypePtr;
+class IUpdateElement : public IIntegratorElement
+{
+    public:
+        virtual UpdateRunFunctionTypePtr registerUpdateRun() = 0;
+};
+
 //! Defines a function / function pointer which can be used to access the current step
 typedef std::function<long()> StepAccessor;
 typedef std::unique_ptr<StepAccessor> StepAccessorPtr;

@@ -1560,21 +1560,17 @@ void gmx::legacy::Integrator::do_simple_md()
     // t_inputrec is being replaced by IMdpOptionsProvider, so this
     // will go away eventually.
     t_inputrec             *ir       = inputrec;
-    gmx_bool                bCalcVir = false, bCalcEner = false;
     gmx_bool                bNS, bFirstStep, bInitStep, bLastStep = FALSE;
-    gmx_bool                do_ene    = false, do_log, do_verbose;
+    gmx_bool                do_verbose;
     tensor                  force_vir = {{0}}, shake_vir = {{0}}, total_vir = {{0}}, pres = {{0}};
     int                     i, m;
     rvec                    mu_tot;
-    matrix                  M;
     gmx_localtop_t          top;
     gmx_enerdata_t         *enerd;
     PaddedVector<gmx::RVec> f {};
     gmx_global_stat_t       gstat;
     t_graph                *graph = nullptr;
-    gmx_groups_t           *groups;
     gmx_shellfc_t          *shellfc;
-    real                    dvdl_constr;
     /* for FEP */
     double                  cycles;
     t_extmass               MassQ;
@@ -1628,11 +1624,6 @@ void gmx::legacy::Integrator::do_simple_md()
     auto logSignaller = std::make_unique<LoggingSignaller>(
                 stepManager->getStepAccessor(), inputrec->nstlog);
     stepManager->registerLastStepCallback(logSignaller->getLastStepCallback());
-    // Later, NS signaller will inform elements directly that a NS step is coming.
-    // Currently, define a lambda to take care of that
-    auto logCallback = std::make_unique<LoggingSignallerCallback>(
-                LoggingSignallerCallback([&do_log](){do_log = true; }));
-    logSignaller->registerCallback(std::move(logCallback));
 
     /*
      * Build energy signaller
@@ -1641,25 +1632,10 @@ void gmx::legacy::Integrator::do_simple_md()
                 stepManager->getStepAccessor(), inputrec->nstcalcenergy, inputrec->nstenergy);
     stepManager->registerLastStepCallback(energySignaller->getLastStepCallback());
     logSignaller->registerCallback(energySignaller->getLoggingCallback());
-    // Later, the energy signaller will inform elements directly.
-    // Currently, define a lambda to take care of that
-    auto calcEnerCallback = std::make_unique<EnergySignallerCallback>(
-                EnergySignallerCallback([&bCalcEner](){bCalcEner = true; }));
-    auto calcVirCallback = std::make_unique<EnergySignallerCallback>(
-                EnergySignallerCallback([&bCalcVir](){bCalcVir = true; }));
-    auto writeEnerCallback = std::make_unique<EnergySignallerCallback>(
-                EnergySignallerCallback([&do_ene](){do_ene = true; }));
-    energySignaller->registerCallback(
-            std::move(calcEnerCallback),
-            std::move(calcVirCallback),
-            std::move(writeEnerCallback),
-            nullptr);
 
     int        nstglobalcomm = mdrunOptions.globalCommunicationInterval;
 
     nstglobalcomm   = check_nstglobalcomm(mdlog, nstglobalcomm, ir, cr);
-
-    groups = &top_global->groups;
 
     Update upd(ir, deform);
     if (!mdrunOptions.continuationOptions.appendFiles)
@@ -1897,22 +1873,11 @@ void gmx::legacy::Integrator::do_simple_md()
                 }
             }
         }
-
-        if (constr)
-        {
-            /* Constrain the initial coordinates and velocities */
-            do_constrain_first(fplog, constr, ir, mdatoms, state);
-        }
     }
 
     if (continuationOptions.haveReadEkin)
     {
         restore_ekinstate_from_state(cr, ekind, &state_global->ekinstate);
-    }
-
-    if (computeGlobalsElementSetup)
-    {
-        (*computeGlobalsElementSetup)();
     }
 
     /* need to make an initiation call to get the Trotter variables set, as well as other constants for non-trotter
@@ -1975,6 +1940,103 @@ void gmx::legacy::Integrator::do_simple_md()
      *
      ************************************************************/
 
+    /*
+     * Build propagators
+     */
+    std::unique_ptr<UpdateStep> updateStep1;
+    std::unique_ptr<UpdateStep> updateStep2;
+
+    if (ei == eiVV)
+    {
+        UpdateStepBuilder updateStepBuilder1;
+        auto              updateVelocity1 = std::make_unique<UpdateVelocity>(
+                    inputrec->delta_t / 2.0, inputrec->opts.acc,
+                    inputrec->opts.nFreeze, mdAtoms->mdatoms(),
+                    state, f.arrayRefWithPadding());
+        updateStepBuilder1.addUpdateElement(std::move(updateVelocity1));
+
+        updateStep1 = updateStepBuilder1.build(mdAtoms->mdatoms(), wcycle);
+
+        UpdateStepBuilder updateStepBuilder2;
+        auto              updateVelocity2 = std::make_unique<UpdateVelocity>(
+                    inputrec->delta_t / 2.0, inputrec->opts.acc,
+                    inputrec->opts.nFreeze, mdAtoms->mdatoms(),
+                    state, f.arrayRefWithPadding());
+        updateStepBuilder2.addUpdateElement(std::move(updateVelocity2));
+
+        auto updatePosition = std::make_unique<UpdatePosition>(
+                    inputrec->delta_t, inputrec->opts.nFreeze, mdAtoms->mdatoms(),
+                    state, &upd);
+        updateStepBuilder2.addUpdateElement(std::move(updatePosition));
+
+        updateStep2 = updateStepBuilder2.build(mdAtoms->mdatoms(), wcycle);
+    }
+    else if (ei == eiMD)
+    {
+        UpdateStepBuilder updateStepBuilder1;
+        updateStep1 = updateStepBuilder1.build(mdAtoms->mdatoms(), wcycle);
+
+        UpdateStepBuilder updateStepBuilder2;
+        auto              updateLeapFrog = std::make_unique<UpdateLeapfrog>(
+                    inputrec->delta_t, stepManager->getStepAccessor(),
+                    inputrec, mdAtoms->mdatoms(), ekind,
+                    state, f.arrayRefWithPadding(), &upd);
+        updateStepBuilder2.addUpdateElement(std::move(updateLeapFrog));
+
+        updateStep2 = updateStepBuilder2.build(mdAtoms->mdatoms(), wcycle);
+    }
+    else
+    {
+        gmx_fatal(FARGS, "Unknown integrator.");
+    }
+
+    auto constrainCoordinates = std::make_unique<ConstrainCoordinates>(
+                stepManager->getStepAccessor(), mdAtoms->mdatoms(),
+                state, &upd, shake_vir, constr, fplog, inputrec);
+    logSignaller->registerCallback(constrainCoordinates->getLoggingCallback());
+    energySignaller->registerCallback(
+            constrainCoordinates->getCalculateEnergyCallback(),
+            constrainCoordinates->getCalculateVirialCallback(),
+            constrainCoordinates->getWriteEnergyCallback(),
+            constrainCoordinates->getCalculateFreeEnergyCallback());
+
+    std::unique_ptr<ConstrainVelocities> constrainVelocities;
+    ElementFunctionTypePtr               constrainVelocitiesSetup    = nullptr;
+    ElementFunctionTypePtr               constrainVelocitiesRun      = nullptr;
+    ElementFunctionTypePtr               constrainVelocitiesTeardown = nullptr;
+
+    if (ei == eiVV)
+    {
+        constrainVelocities = std::make_unique<ConstrainVelocities>(
+                    stepManager->getStepAccessor(), state, shake_vir, constr);
+        logSignaller->registerCallback(constrainVelocities->getLoggingCallback());
+        energySignaller->registerCallback(
+                constrainVelocities->getCalculateEnergyCallback(),
+                constrainVelocities->getCalculateVirialCallback(),
+                constrainVelocities->getWriteEnergyCallback(),
+                constrainVelocities->getCalculateFreeEnergyCallback());
+        constrainVelocitiesSetup    = constrainVelocities->registerSetup();
+        constrainVelocitiesRun      = constrainVelocities->registerRun();
+        constrainVelocitiesTeardown = constrainVelocities->registerRun();
+    }
+
+    auto finishUpdate = std::make_unique<FinishUpdateElement>(
+                mdAtoms->mdatoms(), state, &upd, inputrec, wcycle, constr);
+
+    std::unique_ptr<IIntegratorElement> vvFirstStep;
+    ElementFunctionTypePtr              vvFirstStepSetup = nullptr;
+    ElementFunctionTypePtr              vvFirstStepRun   = nullptr;
+    if (ei == eiVV)
+    {
+        vvFirstStep      = std::make_unique<ResetVForVV>(state);
+        vvFirstStepSetup = vvFirstStep->registerSetup();
+        vvFirstStepRun   = vvFirstStep->registerRun();
+    }
+
+    /*
+     * Register element functions
+     */
+
     auto stepManagerSetup    = stepManager->registerSetup();
     auto stepManagerStep     = stepManager->registerRun();
     auto stepManagerTeardown = stepManager->registerTeardown();
@@ -1991,6 +2053,20 @@ void gmx::legacy::Integrator::do_simple_md()
     auto energySignallerRun      = energySignaller->registerRun();
     auto energySignallerTeardown = energySignaller->registerTeardown();
 
+    auto updateStep1Setup    = updateStep1->registerSetup();
+    auto updateStep1Run      = updateStep1->registerRun();
+    auto updateStep1Teardown = updateStep1->registerTeardown();
+
+    auto updateStep2Setup    = updateStep2->registerSetup();
+    auto updateStep2Run      = updateStep2->registerRun();
+    auto updateStep2Teardown = updateStep2->registerTeardown();
+
+    auto constrainCoordinatesSetup    = constrainCoordinates->registerSetup();
+    auto constrainCoordinatesRun      = constrainCoordinates->registerRun();
+    auto constrainCoordinatesTeardown = constrainCoordinates->registerTeardown();
+
+    auto finishUpdateRun = finishUpdate->registerRun();
+
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
@@ -2003,6 +2079,14 @@ void gmx::legacy::Integrator::do_simple_md()
                 MASTER(cr), ir->nstlist, mdrunOptions.reproducible, nstSignalComm,
                 mdrunOptions.maximumHoursToRun, ir->nstlist == 0, fplog, step, bNS, walltime_accounting);
 
+    /*
+     * Call setup functions
+     */
+
+    if (computeGlobalsElementSetup)
+    {
+        (*computeGlobalsElementSetup)();
+    }
     if (stepManagerSetup)
     {
         (*stepManagerSetup)();
@@ -2023,6 +2107,22 @@ void gmx::legacy::Integrator::do_simple_md()
     {
         (*forceSetup)();
     }
+    if (updateStep1Setup)
+    {
+        (*updateStep1Setup)();
+    }
+    if (updateStep2Setup)
+    {
+        (*updateStep2Setup)();
+    }
+    if (constrainVelocitiesSetup)
+    {
+        (*constrainVelocitiesSetup);
+    }
+    if (constrainCoordinatesSetup)
+    {
+        (*constrainCoordinatesSetup)();
+    }
     if (energyElementSetup)
     {
         (*energyElementSetup)();
@@ -2030,6 +2130,10 @@ void gmx::legacy::Integrator::do_simple_md()
     if (trajectorySignallerSetup)
     {
         (*trajectorySignallerSetup)();
+    }
+    if (vvFirstStepSetup)
+    {
+        (*vvFirstStepSetup)();
     }
 
     // With the step manager, we will be setting last step at the end of the step,
@@ -2070,52 +2174,25 @@ void gmx::legacy::Integrator::do_simple_md()
         if (EI_VV(ir->eI))
         /*  ############### START FIRST UPDATE HALF-STEP FOR VV METHODS############### */
         {
-            rvec *vbuf = nullptr;
-
-            wallcycle_start(wcycle, ewcUPDATE);
-            if (ir->eI == eiVV && bInitStep)
+            if (updateStep1Run)
             {
-                /* if using velocity verlet with full time step Ekin,
-                 * take the first half step only to compute the
-                 * virial for the first step. From there,
-                 * revert back to the initial coordinates
-                 * so that the input is actually the initial step.
-                 */
-                snew(vbuf, state->natoms);
-                copy_rvecn(state->v.rvec_array(), vbuf, 0, state->natoms); /* should make this better for parallelizing? */
-            }
-            else
-            {
-                /* this is for NHC in the Ekin(t+dt/2) version of vv */
-                trotter_update(ir, step, ekind, enerd, state, total_vir, mdatoms, &MassQ, trotter_seq, ettTSEQ1);
+                (*updateStep1Run)();
             }
 
-            update_coords(step, ir, mdatoms, state, f.arrayRefWithPadding(), fcd,
-                          ekind, M, &upd, etrtVELOCITY1,
-                          cr, constr);
-
-            wallcycle_stop(wcycle, ewcUPDATE);
-            constrain_velocities(step, nullptr,
-                                 state,
-                                 shake_vir,
-                                 constr,
-                                 bCalcVir, do_log, do_ene);
-            wallcycle_start(wcycle, ewcUPDATE);
+            if (constrainVelocitiesRun)
+            {
+                (*constrainVelocitiesRun)();
+            }
 
             if (computeGlobalsElementRun)
             {
-                wallcycle_stop(wcycle, ewcUPDATE);
                 (*computeGlobalsElementRun)();
-                wallcycle_start(wcycle, ewcUPDATE);
             }
 
-            /* if it's the initial step, we performed this first step just to get the constraint virial */
-            if (ir->eI == eiVV && bInitStep)
+            if (vvFirstStepRun)
             {
-                copy_rvecn(vbuf, state->v.rvec_array(), 0, state->natoms);
-                sfree(vbuf);
+                (*vvFirstStepRun)();
             }
-            wallcycle_stop(wcycle, ewcUPDATE);
         }
 
         /* ########  END FIRST UPDATE STEP  ############## */
@@ -2134,29 +2211,20 @@ void gmx::legacy::Integrator::do_simple_md()
 
         /* #########   START SECOND UPDATE STEP ################# */
 
-        dvdl_constr = 0;
-
-        if (EI_VV(ir->eI))
+        if (updateStep2Run)
         {
-            /* velocity half-step update */
-            update_coords(step, ir, mdatoms, state, f.arrayRefWithPadding(), fcd,
-                          ekind, M, &upd, etrtVELOCITY2,
-                          cr, constr);
+            (*updateStep2Run)();
         }
 
-        update_coords(step, ir, mdatoms, state, f.arrayRefWithPadding(), fcd,
-                      ekind, M, &upd, etrtPOSITION, cr, constr);
-        wallcycle_stop(wcycle, ewcUPDATE);
+        if (constrainCoordinatesRun)
+        {
+            (*constrainCoordinatesRun)();
+        }
 
-        constrain_coordinates(step, &dvdl_constr, state,
-                              shake_vir,
-                              &upd, constr,
-                              bCalcVir, do_log, do_ene);
-        update_sd_second_half(step, &dvdl_constr, ir, mdatoms, state,
-                              cr, nrnb, wcycle, &upd, constr, do_log, do_ene);
-        finish_update(ir, mdatoms,
-                      state, graph,
-                      nrnb, wcycle, &upd, constr);
+        if (finishUpdateRun)
+        {
+            (*finishUpdateRun)();
+        }
 
         /* ############## IF NOT VV, Calculate globals HERE  ############ */
         if (!EI_VV(ei) && computeGlobalsElementRun)
@@ -2209,10 +2277,6 @@ void gmx::legacy::Integrator::do_simple_md()
 
         // Reset flags
         bNS       = false;
-        do_log    = false;
-        do_ene    = false;
-        bCalcEner = false;
-        bCalcVir  = false;
 
         previousbLastStep = bLastStep;
         if (stepManagerStep)
@@ -2248,6 +2312,22 @@ void gmx::legacy::Integrator::do_simple_md()
     if (computeGlobalsElementTeardown)
     {
         (*computeGlobalsElementTeardown)();
+    }
+    if (updateStep1Teardown)
+    {
+        (*updateStep1Teardown)();
+    }
+    if (updateStep2Teardown)
+    {
+        (*updateStep2Teardown)();
+    }
+    if (constrainVelocitiesTeardown)
+    {
+        (*constrainVelocitiesTeardown)();
+    }
+    if (constrainCoordinatesTeardown)
+    {
+        (*constrainCoordinatesTeardown)();
     }
     if (energyElementTeardown)
     {
