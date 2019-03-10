@@ -68,6 +68,7 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/mshift.h"
 #include "gromacs/pbcutil/pbc.h"
@@ -924,5 +925,146 @@ ElementFunctionTypePtr NeighborSearchSignaller::registerRun()
 ElementFunctionTypePtr NeighborSearchSignaller::registerTeardown()
 {
     return nullptr;
+}
+
+ForceElement::ForceElement(
+        bool                isDynamicBox,
+        bool                isDomDec,
+        StepAccessorPtr     stepAccessor,
+        TimeAccessorPtr     timeAccessor,
+        t_state            *localState,
+        PaddedVector<RVec> *f,
+        gmx_enerdata_t     *enerd,
+        tensor              force_vir,
+        rvec                mu_tot,
+        FILE               *fplog,
+        const t_commrec    *cr,
+        const t_inputrec   *inputrec,
+        const t_mdatoms    *mdatoms,
+        t_nrnb             *nrnb,
+        t_forcerec         *fr,
+        t_fcdata           *fcd,
+        gmx_wallcycle_t     wcycle,
+        gmx_localtop_t     *top,
+        const gmx_groups_t *groups,
+        PpForceWorkload    *ppForceWorkload) :
+    isDynamicBox_(isDynamicBox),
+    doNeighborSearch_(false),
+    calculateVirial_(false),
+    calculateEnergy_(false),
+    calculateFreeEnergy_(false),
+    ddOpenBalanceRegion_(isDomDec ?
+                         DdOpenBalanceRegionBeforeForceComputation::yes :
+                         DdOpenBalanceRegionBeforeForceComputation::no),
+    ddCloseBalanceRegion_(isDomDec ?
+                          DdCloseBalanceRegionAfterForceComputation::yes :
+                          DdCloseBalanceRegionAfterForceComputation::no),
+    stepAccessor_(std::move(stepAccessor)),
+    timeAccessor_(std::move(timeAccessor)),
+    localState_(localState),
+    f_(f),
+    enerd_(enerd),
+    mu_tot_(mu_tot),
+    fplog_(fplog),
+    cr_(cr),
+    inputrec_(inputrec),
+    mdatoms_(mdatoms),
+    nrnb_(nrnb),
+    fr_(fr),
+    graph_(nullptr),
+    fcd_(fcd),
+    wcycle_(wcycle),
+    top_(top),
+    groups_(groups),
+    force_vir_(force_vir),
+    ppForceWorkload_(ppForceWorkload)
+{}
+
+void ForceElement::run()
+{
+    // Disabled functionality
+    Awh            *awh              = nullptr;
+    gmx_enfrot     *enforcedRotation = nullptr;
+    gmx_edsam      *ed               = nullptr;
+    auto            lambda           = ArrayRef<real>();
+    gmx_multisim_t *ms               = nullptr;
+    gmx_vsite_t    *vsite            = nullptr;
+
+    int             flags = (
+            GMX_FORCE_STATECHANGED |
+            (isDynamicBox_ ? GMX_FORCE_DYNAMICBOX : 0) |
+            GMX_FORCE_ALLFORCES |
+            (calculateVirial_ ? GMX_FORCE_VIRIAL : 0) |
+            (calculateEnergy_ ? GMX_FORCE_ENERGY : 0) |
+            (calculateFreeEnergy_ ? GMX_FORCE_DHDL : 0) |
+            (doNeighborSearch_ ? GMX_FORCE_NS : 0));
+
+    auto currentStep = (*stepAccessor_)();
+    auto currentTime = (*timeAccessor_)();
+
+    clear_mat(force_vir_);
+
+    /* The coordinates (x) are shifted (to get whole molecules)
+     * in do_force.
+     * This is parallellized as well, and does communication too.
+     * Check comments in sim_util.c
+     */
+    do_force(fplog_, cr_, ms, inputrec_, awh, enforcedRotation,
+             currentStep, nrnb_, wcycle_, top_, groups_,
+             localState_->box, localState_->x.arrayRefWithPadding(), &localState_->hist,
+             f_->arrayRefWithPadding(), force_vir_, mdatoms_, enerd_, fcd_,
+             lambda, graph_,
+             fr_, ppForceWorkload_, vsite, mu_tot_, currentTime, ed,
+             flags, ddOpenBalanceRegion_, ddCloseBalanceRegion_);
+
+    doNeighborSearch_    = false;
+    calculateVirial_     = false;
+    calculateEnergy_     = false;
+    calculateFreeEnergy_ = false;
+}
+
+ElementFunctionTypePtr ForceElement::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr ForceElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ForceElement::run, this));
+}
+
+ElementFunctionTypePtr ForceElement::registerTeardown()
+{
+    return nullptr;
+}
+
+NeighborSearchSignallerCallbackPtr ForceElement::getNSCallback()
+{
+    return std::make_unique<NeighborSearchSignallerCallback>(
+            [this](){this->doNeighborSearch_ = true; });
+}
+
+EnergySignallerCallbackPtr ForceElement::getCalculateEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateEnergy_ = true; });
+}
+
+EnergySignallerCallbackPtr ForceElement::getCalculateVirialCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateVirial_ = true; });
+}
+
+EnergySignallerCallbackPtr ForceElement::getWriteEnergyCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ForceElement::getCalculateFreeEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateFreeEnergy_ = true; });
 }
 }  // namespace gmx

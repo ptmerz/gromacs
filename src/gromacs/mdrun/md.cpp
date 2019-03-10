@@ -1564,7 +1564,7 @@ void gmx::legacy::Integrator::do_simple_md()
     gmx_bool                bNS, bStopCM,
                             bFirstStep, bInitStep, bLastStep = FALSE;
     gmx_bool                do_ene = false, do_log, do_verbose;
-    int                     force_flags, cglo_flags;
+    int                     cglo_flags;
     tensor                  force_vir = {{0}}, shake_vir = {{0}}, total_vir = {{0}}, pres = {{0}};
     int                     i, m;
     rvec                    mu_tot;
@@ -1748,6 +1748,61 @@ void gmx::legacy::Integrator::do_simple_md()
                                   &graph, mdAtoms, constr, vsite, shellfc);
 
         upd.setNumAtoms(state->natoms);
+    }
+
+    /*
+     * Build the force or shell / flex con element
+     */
+
+    std::unique_ptr<ForceElement>   forceElement;
+    std::unique_ptr<ShellFCElement> shellFCElement;
+    ElementFunctionTypePtr          forceSetup;
+    ElementFunctionTypePtr          forceRun;
+    ElementFunctionTypePtr          forceTeardown;
+    if (shellfc)
+    {
+        shellFCElement = std::make_unique<ShellFCElement>(
+                    inputrecDynamicBox(inputrec), DOMAINDECOMP(cr), mdrunOptions.verbose,
+                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                    state, &f, enerd, force_vir,
+                    mu_tot, fplog, cr, inputrec, mdAtoms->mdatoms(), nrnb,
+                    fr, fcd, wcycle, &top, &top_global->groups,
+                    constr, shellfc, top_global, ppForceWorkload);
+
+        forceSetup    = shellFCElement->registerSetup();
+        forceRun      = shellFCElement->registerRun();
+        forceTeardown = shellFCElement->registerTeardown();
+
+        energySignaller->registerCallback(
+                shellFCElement->getCalculateEnergyCallback(),
+                shellFCElement->getCalculateVirialCallback(),
+                shellFCElement->getWriteEnergyCallback(),
+                shellFCElement->getCalculateFreeEnergyCallback());
+
+        neighborSearchSignaller->registerCallback(
+                shellFCElement->getNSCallback());
+    }
+    else
+    {
+        forceElement = std::make_unique<ForceElement>(
+                    inputrecDynamicBox(inputrec), DOMAINDECOMP(cr),
+                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                    state, &f, enerd, force_vir,
+                    mu_tot, fplog, cr, inputrec, mdAtoms->mdatoms(), nrnb,
+                    fr, fcd, wcycle, &top, &top_global->groups, ppForceWorkload);
+
+        forceSetup    = forceElement->registerSetup();
+        forceRun      = forceElement->registerRun();
+        forceTeardown = forceElement->registerTeardown();
+
+        energySignaller->registerCallback(
+                forceElement->getCalculateEnergyCallback(),
+                forceElement->getCalculateVirialCallback(),
+                forceElement->getWriteEnergyCallback(),
+                forceElement->getCalculateFreeEnergyCallback());
+
+        neighborSearchSignaller->registerCallback(
+                forceElement->getNSCallback());
     }
 
     auto mdatoms = mdAtoms->mdatoms();
@@ -1953,9 +2008,6 @@ void gmx::legacy::Integrator::do_simple_md()
                 MASTER(cr), ir->nstlist, mdrunOptions.reproducible, nstSignalComm,
                 mdrunOptions.maximumHoursToRun, ir->nstlist == 0, fplog, step, bNS, walltime_accounting);
 
-    DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion   = (DOMAINDECOMP(cr) ? DdOpenBalanceRegionBeforeForceComputation::yes : DdOpenBalanceRegionBeforeForceComputation::no);
-    DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion  = (DOMAINDECOMP(cr) ? DdCloseBalanceRegionAfterForceComputation::yes : DdCloseBalanceRegionAfterForceComputation::no);
-
     if (stepManagerSetup)
     {
         (*stepManagerSetup)();
@@ -1971,6 +2023,10 @@ void gmx::legacy::Integrator::do_simple_md()
     if (energySignallerSetup)
     {
         (*energySignallerSetup)();
+    }
+    if (forceSetup)
+    {
+        (*forceSetup)();
     }
 
     // With the step manager, we will be setting last step at the end of the step,
@@ -2023,48 +2079,14 @@ void gmx::legacy::Integrator::do_simple_md()
         {
             print_ebin_header(fplog, step, t); /* can we improve the information printed here? */
         }
-        clear_mat(force_vir);
 
         /* Do we need global communication ? */
         bGStat = (bCalcVir || bCalcEner || bStopCM ||
                   do_per_step(step, nstglobalcomm));
 
-        force_flags = (GMX_FORCE_STATECHANGED |
-                       ((inputrecDynamicBox(ir)) ? GMX_FORCE_DYNAMICBOX : 0) |
-                       GMX_FORCE_ALLFORCES |
-                       (bCalcVir ? GMX_FORCE_VIRIAL : 0) |
-                       (bCalcEner ? GMX_FORCE_ENERGY : 0));
-
-        if (shellfc)
+        if (forceRun)
         {
-            /* Now is the time to relax the shells */
-            relax_shell_flexcon(fplog, cr, ms, mdrunOptions.verbose,
-                                enforcedRotation, step,
-                                ir, bNS, force_flags, &top,
-                                constr, enerd, fcd,
-                                state, f.arrayRefWithPadding(), force_vir, mdatoms,
-                                nrnb, wcycle, graph, groups,
-                                shellfc, fr, ppForceWorkload, t, mu_tot,
-                                vsite,
-                                ddOpenBalanceRegion, ddCloseBalanceRegion);
-        }
-        else
-        {
-            /* The coordinates (x) are shifted (to get whole molecules)
-             * in do_force.
-             * This is parallellized as well, and does communication too.
-             * Check comments in sim_util.c
-             */
-            gmx_edsam *ed  = nullptr;
-            Awh       *awh = nullptr;
-            do_force(fplog, cr, ms, ir, awh, enforcedRotation,
-                     step, nrnb, wcycle, &top, groups,
-                     state->box, state->x.arrayRefWithPadding(), &state->hist,
-                     f.arrayRefWithPadding(), force_vir, mdatoms, enerd, fcd,
-                     state->lambda, graph,
-                     fr, ppForceWorkload, vsite, mu_tot, t, ed,
-                     (bNS ? GMX_FORCE_NS : 0) | force_flags,
-                     ddOpenBalanceRegion, ddCloseBalanceRegion);
+            (*forceRun)();
         }
 
         if (EI_VV(ir->eI))
@@ -2379,7 +2401,10 @@ void gmx::legacy::Integrator::do_simple_md()
     }
     done_mdoutf(outf);
 
-    done_shellfc(fplog, shellfc, step - inputrec->init_step);
+    if (forceTeardown)
+    {
+        (*forceTeardown)();
+    }
 
     walltime_accounting_set_nsteps_done(walltime_accounting, step - inputrec->init_step);
 

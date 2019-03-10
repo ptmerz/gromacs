@@ -1357,3 +1357,162 @@ void done_shellfc(FILE *fplog, gmx_shellfc_t *shfc, int64_t numSteps)
 
     // TODO Deallocate memory in shfc
 }
+
+namespace gmx
+{
+ShellFCElement::ShellFCElement(
+        bool isDynamicBox, bool isDomDec, bool isVerbose,
+        StepAccessorPtr stepAccessor, TimeAccessorPtr timeAccessor,
+        t_state *localState,
+        PaddedVector<RVec> *f,
+        gmx_enerdata_t *enerd,
+        tensor force_vir,
+        rvec mu_tot,
+        FILE                 *fplog,
+        const t_commrec      *cr,
+        const t_inputrec     *inputrec,
+        const t_mdatoms      *mdatoms,
+        t_nrnb               *nrnb,
+        t_forcerec           *fr,
+        t_fcdata             *fcd,
+        gmx_wallcycle_t       wcycle,
+        gmx_localtop_t       *top,
+        const gmx_groups_t   *groups,
+        Constraints *constr,
+        gmx_shellfc_t *shellfc,
+        const gmx_mtop_t *top_global,
+        PpForceWorkload *ppForceWorkload) :
+    isDynamicBox_(isDynamicBox),
+    isVerbose_(isVerbose),
+    doNeighborSearch_(false),
+    calculateVirial_(false),
+    calculateEnergy_(false),
+    calculateFreeEnergy_(false),
+    ddOpenBalanceRegion_(isDomDec ?
+                         DdOpenBalanceRegionBeforeForceComputation::yes :
+                         DdOpenBalanceRegionBeforeForceComputation::no),
+    ddCloseBalanceRegion_(isDomDec ?
+                          DdCloseBalanceRegionAfterForceComputation::yes :
+                          DdCloseBalanceRegionAfterForceComputation::no),
+    stepAccessor_(std::move(stepAccessor)),
+    timeAccessor_(std::move(timeAccessor)),
+    localState_(localState),
+    f_(f),
+    enerd_(enerd),
+    mu_tot_(mu_tot),
+    fplog_(fplog),
+    cr_(cr),
+    inputrec_(inputrec),
+    mdatoms_(mdatoms),
+    nrnb_(nrnb),
+    fr_(fr),
+    graph_(nullptr),
+    fcd_(fcd),
+    wcycle_(wcycle),
+    top_(top),
+    groups_(groups),
+    force_vir_(force_vir),
+    constr_(constr),
+    shellfc_(shellfc),
+    top_global_(top_global),
+    ppForceWorkload_(ppForceWorkload)
+{}
+
+void ShellFCElement::setup()
+{
+    shellfc_ = init_shell_flexcon(fplog_,
+                                  top_global_, constr_ ? constr_->numFlexibleConstraints() : 0,
+                                  inputrec_->nstcalcenergy, DOMAINDECOMP(cr_));
+}
+
+void ShellFCElement::run()
+{
+    // Disabled functionality
+    gmx_enfrot     *enforcedRotation = nullptr;
+    gmx_multisim_t *ms               = nullptr;
+    gmx_vsite_t    *vsite            = nullptr;
+
+    int             flags = (
+            GMX_FORCE_STATECHANGED |
+            (isDynamicBox_ ? GMX_FORCE_DYNAMICBOX : 0) |
+            GMX_FORCE_ALLFORCES |
+            (calculateVirial_ ? GMX_FORCE_VIRIAL : 0) |
+            (calculateEnergy_ ? GMX_FORCE_ENERGY : 0) |
+            (calculateFreeEnergy_ ? GMX_FORCE_DHDL : 0) |
+            (doNeighborSearch_ ? GMX_FORCE_NS : 0));
+
+    auto currentStep = (*stepAccessor_)();
+    auto currentTime = (*timeAccessor_)();
+
+    clear_mat(force_vir_);
+
+    /* Now is the time to relax the shells */
+    relax_shell_flexcon(fplog_, cr_, ms, isVerbose_,
+                        enforcedRotation, currentStep,
+                        inputrec_, doNeighborSearch_, flags, top_,
+                        constr_, enerd_, fcd_,
+                        localState_, f_->arrayRefWithPadding(), force_vir_, mdatoms_,
+                        nrnb_, wcycle_, graph_, groups_,
+                        shellfc_, fr_, ppForceWorkload_, currentTime, mu_tot_,
+                        vsite, ddOpenBalanceRegion_, ddCloseBalanceRegion_);
+
+    doNeighborSearch_    = false;
+    calculateVirial_     = false;
+    calculateEnergy_     = false;
+    calculateFreeEnergy_ = false;
+}
+
+void ShellFCElement::teardown()
+{
+    auto currentStep = (*stepAccessor_)();
+    done_shellfc(fplog_, shellfc_, currentStep - inputrec_->init_step);
+}
+
+ElementFunctionTypePtr ShellFCElement::registerSetup()
+{
+    // this should return setup(), but currently this is done outside of the element,
+    // as there is a non-trivial dependency on mdAlgorithmSetupAtomData
+    return nullptr;
+}
+
+ElementFunctionTypePtr ShellFCElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ShellFCElement::run, this));
+}
+
+ElementFunctionTypePtr ShellFCElement::registerTeardown()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ShellFCElement::teardown, this));
+}
+
+NeighborSearchSignallerCallbackPtr ShellFCElement::getNSCallback()
+{
+    return std::make_unique<NeighborSearchSignallerCallback>(
+            [this](){this->doNeighborSearch_ = true; });
+}
+
+EnergySignallerCallbackPtr ShellFCElement::getCalculateEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateEnergy_ = true; });
+}
+
+EnergySignallerCallbackPtr ShellFCElement::getCalculateVirialCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateVirial_ = true; });
+}
+
+EnergySignallerCallbackPtr ShellFCElement::getWriteEnergyCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr ShellFCElement::getCalculateFreeEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->calculateFreeEnergy_ = true; });
+}
+}  // namespace gmx
