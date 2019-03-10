@@ -47,16 +47,22 @@
 #include <memory>
 #include <vector>
 
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/mdrun/integratorinterfaces.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
 
 class energyhistory_t;
 struct gmx_enfrot;
+struct gmx_ekindata_t;
+struct gmx_enerdata_t;
+struct gmx_localtop_t;
+struct gmx_mdoutf;
 struct gmx_mtop_t;
 struct gmx_membed_t;
 struct gmx_multisim_t;
 struct gmx_output_env_t;
+struct gmx_shellfc_t;
 struct gmx_vsite_t;
 struct gmx_wallcycle;
 struct gmx_walltime_accounting;
@@ -67,9 +73,11 @@ struct t_commrec;
 struct t_fcdata;
 struct t_forcerec;
 struct t_filenm;
+struct t_graph;
 struct t_inputrec;
 struct t_nrnb;
 class t_state;
+struct t_vcm;
 
 namespace gmx
 {
@@ -77,10 +85,14 @@ class AccumulateGlobalsBuilder;
 class BoxDeformation;
 class Constraints;
 class IMDOutputProvider;
+class IntegratorLoop;
 class MDLogger;
 class MDAtoms;
+class MicroState;
 class PpForceWorkload;
+class SimulationSignal;
 class StopHandlerBuilder;
+class Update;
 
 class Integrator
 {
@@ -88,6 +100,72 @@ class Integrator
         virtual void run()    = 0;
         virtual ~Integrator() = default;
 };
+
+class SimpleIntegrator : public Integrator
+{
+    public:
+        void run() override;
+
+        void setup(std::unique_ptr<IntegratorLoop> outerLoop, std::shared_ptr<MicroState> microState);
+
+        friend class IntegratorBuilder;
+
+    private:
+        std::unique_ptr<IntegratorLoop> outerLoop_;
+        std::shared_ptr<MicroState>     microState_;
+
+        const int64_t                   initStep_;
+        StepAccessorPtr                 stepAccessor_;
+
+        //! Handles logging.
+        FILE                    *fplog_;
+        //! Handles communication.
+        t_commrec               *cr_;
+        //! Manages wall cycle accounting.
+        gmx_wallcycle           *wcycle_;
+        //! Manages wall time accounting.
+        gmx_walltime_accounting *walltime_accounting_;
+
+        SimpleIntegrator(
+            FILE                    *fplog,
+            t_commrec               *cr,
+            const MdrunOptions      &mdrunOptions,
+            BoxDeformation          *deform,
+            t_inputrec              *inputrec,
+            gmx_mtop_t              *top_global,
+            t_nrnb                  *nrnb,
+            t_state                 *state_global,
+            Constraints             *constr,
+            gmx_wallcycle           *wcycle,
+            gmx_walltime_accounting *walltime_accounting,
+            StepAccessorPtr          stepAccessor);
+
+    public:
+        //! The local state
+        std::unique_ptr<t_state>        localStateInstance_;
+        t_state                        *localState_;
+        //! The local topology
+        gmx_localtop_t                 *localTopology_;
+        //! Shell / flexible constraints
+        gmx_shellfc_t                  *shellfc_;
+        //! Whether we're verbose
+        bool                            do_verbose_;
+        //! Update
+        Update                         *upd_;
+        //! The force vector
+        PaddedVector<gmx::RVec>         f_;
+        //! Energy data structure
+        gmx_enerdata_t                 *enerd_;
+        //! Total dipole moment
+        rvec                            mu_tot_;
+        //! Virials
+        tensor                          force_vir_, shake_vir_, total_vir_, pres_;
+        //! The kinetic energy data structure
+        std::unique_ptr<gmx_ekindata_t> eKinData_;
+        //! Center of mass motion removal
+        t_vcm                          *vcm_;
+};
+
 
 /*! \internal
  * \brief Element managing the current step and time
@@ -186,6 +264,49 @@ class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClien
         const t_commrec         *cr_;
         gmx_walltime_accounting *walltime_accounting_;
         gmx_wallcycle           *wcycle_;
+};
+
+class IntegratorLoop : public IIntegratorElement
+{
+    public:
+        // make this an element itself
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        LastStepCallbackPtr getLastStepCallback();
+
+        friend class IntegratorLoopBuilder;
+
+    private:
+        explicit IntegratorLoop(
+            std::vector < std::unique_ptr < IIntegratorElement>> loopElements,
+            long                                                 numSteps = -1);
+
+        std::vector < std::unique_ptr < IIntegratorElement>> loopElements_;
+
+        std::vector<ElementFunctionTypePtr> setupFunctions_;
+        std::vector<ElementFunctionTypePtr> runFunctions_;
+        std::vector<ElementFunctionTypePtr> teardownFunctions_;
+
+        long numSteps_;
+        bool isLastStep_;
+
+        void setup();
+        void run();
+        void teardown();
+
+        void nextStepIsLast();
+};
+
+class IntegratorLoopBuilder
+{
+    public:
+        void addElement(std::unique_ptr<IIntegratorElement> element);
+        std::unique_ptr<IntegratorLoop> build(long numSteps = -1);
+
+    private:
+        std::vector < std::unique_ptr < IIntegratorElement>> elements_;
 };
 
 class IntegratorBuilder

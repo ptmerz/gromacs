@@ -44,16 +44,160 @@
 #include "integrator.h"
 
 #include "gromacs/domdec/domdec.h"
+#include "gromacs/gmxlib/nrnb.h"
+#include "gromacs/math/vec.h"
+#include "gromacs/mdlib/constr.h"
+#include "gromacs/mdlib/energyoutput.h"
+#include "gromacs/mdlib/force.h"
+#include "gromacs/mdlib/gmx_omp_nthreads.h"
+#include "gromacs/mdlib/md_support.h"
+#include "gromacs/mdlib/mdatoms.h"
+#include "gromacs/mdlib/mdrun.h"
+#include "gromacs/mdlib/shellfc.h"
 #include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdlib/stophandler.h"
+#include "gromacs/mdlib/trajectory_writing.h"
 #include "gromacs/mdtypes/commrec.h"
+#include "gromacs/mdlib/tgroup.h"
+#include "gromacs/mdlib/update.h"
+#include "gromacs/mdtypes/commrec.h"
+#include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/state.h"
+#include "gromacs/topology/topology.h"
+#include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/logger.h"
 
 namespace gmx
 {
+
+SimpleIntegrator::SimpleIntegrator(
+        FILE                    *fplog,
+        t_commrec               *cr,
+        const MdrunOptions      &mdrunOptions,
+        BoxDeformation          *deform,
+        t_inputrec              *inputrec,
+        gmx_mtop_t              *top_global,
+        t_nrnb                  *nrnb,
+        t_state                 *state_global,
+        Constraints             *constr,
+        gmx_wallcycle           *wcycle,
+        gmx_walltime_accounting *walltime_accounting,
+        StepAccessorPtr          stepAccessor) :
+    initStep_(inputrec->init_step),
+    stepAccessor_(std::move(stepAccessor)),
+    fplog_(fplog),
+    cr_(cr),
+    wcycle_(wcycle),
+    walltime_accounting_(walltime_accounting),
+    localStateInstance_(),
+    localState_(nullptr),
+    localTopology_(new gmx_localtop_t()),
+    shellfc_(nullptr),
+    do_verbose_(false),
+    upd_(new Update(inputrec, deform)),
+    f_({}
+       ),  // (uncrustify...)
+    eKinData_(std::make_unique<gmx_ekindata_t>()),
+    vcm_(new t_vcm(top_global->groups, *inputrec))
+{
+    if (!mdrunOptions.continuationOptions.appendFiles)
+    {
+        pleaseCiteCouplingAlgorithms(fplog, *inputrec);
+    }
+
+    /* Energy terms and groups */
+    snew(enerd_, 1);
+    init_enerdata(top_global->groups.grps[egcENER].nr, inputrec->fepvals->n_lambda,
+                  enerd_);
+
+    init_ekindata(fplog, top_global, &(inputrec->opts), eKinData_.get());
+    /* Copy the cos acceleration to the groups struct */
+    eKinData_->cosacc.cos_accel = inputrec->cos_accel;
+
+    init_nrnb(nrnb);
+
+    clear_mat(force_vir_);
+    clear_mat(shake_vir_);
+    clear_mat(total_vir_);
+    clear_mat(pres_);
+
+    reportComRemovalInfo(fplog, *vcm_);
+
+    // Check for polarizable models and flexible constraints
+    shellfc_ = init_shell_flexcon(fplog,
+                                  top_global, constr ? constr->numFlexibleConstraints() : 0,
+                                  inputrec->nstcalcenergy, DOMAINDECOMP(cr));
+
+    // Local state only becomes valid now.
+    if (DOMAINDECOMP(cr))
+    {
+        localStateInstance_ = std::make_unique<t_state>();
+        localState_         = localStateInstance_.get();
+    }
+    else
+    {
+        localState_ = state_global;
+    }
+
+    if (MASTER(cr))
+    {
+        char tbuf[20];
+        char sbuf[STEPSTRSIZE], sbuf2[STEPSTRSIZE];
+        fprintf(stderr, "starting mdrun '%s'\n",
+                *(top_global->name));
+        if (inputrec->nsteps >= 0)
+        {
+            sprintf(tbuf, "%8.1f", (inputrec->init_step+inputrec->nsteps)*inputrec->delta_t);
+        }
+        else
+        {
+            sprintf(tbuf, "%s", "infinite");
+        }
+        if (inputrec->init_step > 0)
+        {
+            fprintf(stderr, "%s steps, %s ps (continuing from step %s, %8.1f ps).\n",
+                    gmx_step_str(inputrec->init_step+inputrec->nsteps, sbuf), tbuf,
+                    gmx_step_str(inputrec->init_step, sbuf2),
+                    inputrec->init_step*inputrec->delta_t);
+        }
+        else
+        {
+            fprintf(stderr, "%s steps, %s ps.\n",
+                    gmx_step_str(inputrec->nsteps, sbuf), tbuf);
+        }
+        fprintf(fplog, "\n");
+    }
+}
+
+void SimpleIntegrator::setup(std::unique_ptr<gmx::IntegratorLoop> outerLoop,
+                             std::shared_ptr<gmx::MicroState>     microState)
+{
+    outerLoop_  = std::move(outerLoop);
+    microState_ = std::move(microState);
+}
+
+void SimpleIntegrator::run()
+{
+    walltime_accounting_start_time(walltime_accounting_);
+    wallcycle_start(wcycle_, ewcRUN);
+    print_start(fplog_, cr_, walltime_accounting_, "mdrun");
+
+    auto setup    = outerLoop_->registerSetup();
+    auto run      = outerLoop_->registerRun();
+    auto teardown = outerLoop_->registerTeardown();
+
+    // uncrustify wants these shifted by one space...
+     (*setup)();
+     (*run)();
+     (*teardown)();
+
+    walltime_accounting_end_time(walltime_accounting_);
+    walltime_accounting_set_nsteps_done(walltime_accounting_, (*stepAccessor_)() - initStep_);
+}
 
 SimpleStepManager::SimpleStepManager(
         real timestep, long nsteps, long step, real time) :
@@ -126,6 +270,104 @@ void SimpleStepManager::setup()
     }
 }
 
+IntegratorLoop::IntegratorLoop(
+        std::vector < std::unique_ptr < IIntegratorElement>> loopElements,
+        long                                                 numSteps) :
+    loopElements_(std::move(loopElements)),
+    numSteps_(numSteps),
+    isLastStep_(false)
+{
+    for (auto &element : loopElements_)
+    {
+        auto setup = element->registerSetup();
+        if (setup)
+        {
+            setupFunctions_.emplace_back(std::move(setup));
+        }
+
+        auto run = element->registerRun();
+        if (run)
+        {
+            runFunctions_.emplace_back(std::move(run));
+        }
+
+        auto teardown = element->registerTeardown();
+        if (teardown)
+        {
+            teardownFunctions_.emplace_back(std::move(teardown));
+        }
+    }
+}
+
+void IntegratorLoop::setup()
+{
+    for (const auto &setupFct : this->setupFunctions_)
+    {
+        (*setupFct)();
+    }
+}
+void IntegratorLoop::run()
+{
+    long step = 0;
+    while (!isLastStep_ && (numSteps_ < 0 || step < numSteps_))
+    {
+        for (const auto &runFct : this->runFunctions_)
+        {
+            (*runFct)();
+        }
+        ++step;
+    }
+}
+void IntegratorLoop::teardown()
+{
+    // Perform last step
+    for (const auto &runFct : this->runFunctions_)
+    {
+        (*runFct)();
+    }
+    for (const auto &teardownFct : this->teardownFunctions_)
+    {
+        (*teardownFct)();
+    }
+}
+
+ElementFunctionTypePtr IntegratorLoop::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&IntegratorLoop::setup, this));
+}
+ElementFunctionTypePtr IntegratorLoop::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&IntegratorLoop::run, this));
+}
+ElementFunctionTypePtr IntegratorLoop::registerTeardown()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&IntegratorLoop::teardown, this));
+}
+
+void IntegratorLoop::nextStepIsLast()
+{
+    isLastStep_ = true;
+}
+
+LastStepCallbackPtr IntegratorLoop::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            std::bind(&IntegratorLoop::nextStepIsLast, this));
+}
+
+void IntegratorLoopBuilder::addElement(std::unique_ptr<gmx::IIntegratorElement> element)
+{
+    elements_.emplace_back(std::move(element));
+}
+std::unique_ptr<IntegratorLoop> IntegratorLoopBuilder::build(long numSteps)
+{
+    return std::unique_ptr<IntegratorLoop>(
+            new IntegratorLoop(std::move(elements_), numSteps));
+}
+
 IntegratorBuilder::IntegratorBuilder(
         FILE                               *fplog,
         t_commrec                          *cr,
@@ -191,12 +433,312 @@ IntegratorBuilder::IntegratorBuilder(
 
 std::unique_ptr<Integrator> IntegratorBuilder::build()
 {
-    return std::make_unique<legacy::Integrator>(
-            fplog_, cr_, ms_, mdlog_, nfile_, fnm_, oenv_, mdrunOptions_, vsite_, constr_,
-            enforcedRotation_, deform_, outputProvider_, inputrec_, top_global_, fcd_, state_global_,
-            observablesHistory_, mdAtoms_, nrnb_, wcycle_, fr_, ppForceWorkload_, replExParams_,
-            membed_, accumulateGlobalsBuilder_, walltime_accounting_, std::move(stopHandlerBuilder_),
-            ei_, doRerun_);
+    // hack for legacy integrator - will be replaced by feature switch
+    if (inputrec_->userint1 != 99887766)
+    {
+        return std::make_unique<legacy::Integrator>(
+                fplog_, cr_, ms_, mdlog_, nfile_, fnm_, oenv_, mdrunOptions_, vsite_, constr_,
+                enforcedRotation_, deform_, outputProvider_, inputrec_, top_global_, fcd_, state_global_,
+                observablesHistory_, mdAtoms_, nrnb_, wcycle_, fr_, ppForceWorkload_, replExParams_,
+                membed_, accumulateGlobalsBuilder_, walltime_accounting_, std::move(stopHandlerBuilder_),
+                ei_, doRerun_);
+    }
+
+    /*
+     * Build step manager
+     */
+    auto stepManager = std::make_unique<SimpleStepManager>(
+                inputrec_->delta_t, inputrec_->nsteps, inputrec_->init_step, inputrec_->init_t);
+
+    /*
+     * Instantiate integrator
+     */
+    auto integrator = std::unique_ptr<SimpleIntegrator>(
+                new SimpleIntegrator(
+                        fplog_, cr_, mdrunOptions_, deform_, inputrec_,
+                        top_global_, nrnb_, state_global_, constr_,
+                        wcycle_, walltime_accounting_, stepManager->getStepAccessor()));
+
+    /*
+     * Build neighbor search signaller
+     */
+    auto neighborSearchSignaller = std::make_unique<NeighborSearchSignaller>(
+                stepManager->getStepAccessor(), inputrec_->nstlist);
+
+    /*
+     * Build logging signaller
+     */
+    auto logSignaller = std::make_unique<LoggingSignaller>(
+                stepManager->getStepAccessor(), inputrec_->nstlog);
+    stepManager->registerLastStepCallback(logSignaller->getLastStepCallback());
+
+    /*
+     * Build energy signaller
+     */
+    auto energySignaller = std::make_unique<EnergySignaller>(
+                stepManager->getStepAccessor(),
+                inputrec_->nstcalcenergy, inputrec_->nstenergy);
+    stepManager->registerLastStepCallback(energySignaller->getLastStepCallback());
+
+    /*
+     * Build trajectory signaller
+     */
+    auto trajectorySignaller = std::make_unique<TrajectorySignaller>(
+                stepManager->getStepAccessor(),
+                inputrec_->nstxout, inputrec_->nstvout, inputrec_->nstfout, inputrec_->nstxout_compressed);
+
+    /*
+     * Build compute globals element
+     */
+    auto computeGlobalsElement = std::make_unique<ComputeGlobalsElement>(
+                stepManager->getStepAccessor(), integrator->localState_, integrator->enerd_,
+                integrator->force_vir_, integrator->shake_vir_, integrator->total_vir_,
+                integrator->pres_, integrator->mu_tot_, fplog_, mdlog_, cr_, inputrec_,
+                mdAtoms_->mdatoms(), nrnb_, fr_, wcycle_, top_global_, integrator->localTopology_,
+                integrator->eKinData_.get(), constr_, integrator->vcm_, mdrunOptions_.globalCommunicationInterval);
+    energySignaller->registerCallback(
+            computeGlobalsElement->getCalculateEnergyCallback(),
+            computeGlobalsElement->getCalculateVirialCallback(),
+            computeGlobalsElement->getWriteEnergyCallback(),
+            computeGlobalsElement->getCalculateFreeEnergyCallback());
+
+    /*
+     * Build the domdec element (needs valid state pointer)
+     */
+    const int nstglobalcomm = check_nstglobalcomm(
+                mdlog_, mdrunOptions_.globalCommunicationInterval, inputrec_, cr_);
+    auto      domDecElement = std::make_unique<DomDecElement>(
+                nstglobalcomm, stepManager->getStepAccessor(),
+                mdrunOptions_.verbose, mdrunOptions_.verboseStepPrintInterval,
+                fplog_, cr_, mdlog_, constr_, inputrec_, top_global_,
+                state_global_, mdAtoms_, nrnb_, wcycle_, fr_,
+                integrator->localState_, integrator->localTopology_,
+                integrator->shellfc_, integrator->upd_, &integrator->f_,
+                computeGlobalsElement->getCheckNOfBondedInteractionsCallback());
+    neighborSearchSignaller->registerCallback(domDecElement->getNSCallback());
+
+    /*
+     * Trajectory / Energy
+     */
+    auto trajectoryWriter = std::make_unique<TrajectoryWriter>(
+                fplog_, nfile_, fnm_, mdrunOptions_, cr_, outputProvider_,
+                inputrec_, top_global_, oenv_, wcycle_);
+
+    auto energyElement = std::make_unique<EnergyElement>(
+                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                top_global_, inputrec_, mdAtoms_, integrator->localState_,
+                integrator->enerd_, integrator->force_vir_, integrator->shake_vir_,
+                integrator->total_vir_, integrator->pres_,
+                integrator->eKinData_.get(), constr_, integrator->mu_tot_, fplog_, fcd_, MASTER(cr_));
+    // Could be done by a builder
+    trajectoryWriter->registerClient(
+            energyElement->registerTrajectoryWriterSetup(),
+            energyElement->registerTrajectoryRun(),
+            energyElement->registerEnergyRun(),
+            energyElement->registerTrajectoryWriterTeardown());
+    stepManager->registerLastStepCallback(energyElement->getLastStepCallback());
+    energySignaller->registerCallback(
+            energyElement->getCalculateEnergyCallback(),
+            energyElement->getCalculateVirialCallback(),
+            energyElement->getWriteEnergyCallback(),
+            energyElement->getCalculateFreeEnergyCallback());
+    logSignaller->registerCallback(energyElement->getLoggingCallback());
+
+    auto microState = std::make_shared<MicroState>(
+                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                top_global_->natoms, fplog_, cr_, state_global_,
+                integrator->localState_, integrator->f_.arrayRefWithPadding(),
+                inputrec_->nstxout, inputrec_->nstvout, inputrec_->nstfout, inputrec_->nstxout_compressed);
+    // Could be done by a builder
+    trajectoryWriter->registerClient(
+            microState->registerTrajectoryWriterSetup(),
+            microState->registerTrajectoryRun(),
+            microState->registerEnergyRun(),
+            microState->registerTrajectoryWriterTeardown());
+    trajectorySignaller->registerCallback(microState->getTrajectorySignallerCallback());
+
+    std::unique_ptr<IIntegratorElement> forceElement;
+
+    if (integrator->shellfc_)
+    {
+        auto fElement = std::make_unique<ShellFCElement>(
+                    inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_), mdrunOptions_.verbose,
+                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                    integrator->localState_, &integrator->f_, integrator->enerd_, integrator->force_vir_,
+                    integrator->mu_tot_, fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
+                    fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups,
+                    constr_, integrator->shellfc_, top_global_, ppForceWorkload_);
+
+        energySignaller->registerCallback(
+                fElement->getCalculateEnergyCallback(),
+                fElement->getCalculateVirialCallback(),
+                fElement->getWriteEnergyCallback(),
+                fElement->getCalculateFreeEnergyCallback());
+
+        neighborSearchSignaller->registerCallback(
+                fElement->getNSCallback());
+
+        forceElement = std::move(fElement);
+    }
+    else
+    {
+        auto fElement = std::make_unique<ForceElement>(
+                    inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_),
+                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
+                    integrator->localState_, &integrator->f_, integrator->enerd_, integrator->force_vir_,
+                    integrator->mu_tot_, fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
+                    fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups, ppForceWorkload_);
+
+        energySignaller->registerCallback(
+                fElement->getCalculateEnergyCallback(),
+                fElement->getCalculateVirialCallback(),
+                fElement->getWriteEnergyCallback(),
+                fElement->getCalculateFreeEnergyCallback());
+
+        neighborSearchSignaller->registerCallback(
+                fElement->getNSCallback());
+
+        forceElement = std::move(fElement);
+    }
+
+    /*
+     * Build propagators
+     */
+    std::unique_ptr<UpdateStep> updateStep1;
+    std::unique_ptr<UpdateStep> updateStep2;
+
+    if (inputrec_->eI == eiVV)
+    {
+        UpdateStepBuilder updateStepBuilder1;
+        auto              updateVelocity1 = std::make_unique<UpdateVelocity>(
+                    inputrec_->delta_t / 2.0, inputrec_->opts.acc,
+                    inputrec_->opts.nFreeze, mdAtoms_->mdatoms(),
+                    integrator->localState_, integrator->f_.arrayRefWithPadding());
+        updateStepBuilder1.addUpdateElement(std::move(updateVelocity1));
+
+        updateStep1 = updateStepBuilder1.build(mdAtoms_->mdatoms(), wcycle_);
+
+        UpdateStepBuilder updateStepBuilder2;
+        auto              updateVelocity2 = std::make_unique<UpdateVelocity>(
+                    inputrec_->delta_t / 2.0, inputrec_->opts.acc,
+                    inputrec_->opts.nFreeze, mdAtoms_->mdatoms(),
+                    integrator->localState_, integrator->f_.arrayRefWithPadding());
+        updateStepBuilder2.addUpdateElement(std::move(updateVelocity2));
+
+        auto updatePosition = std::make_unique<UpdatePosition>(
+                    inputrec_->delta_t, inputrec_->opts.nFreeze, mdAtoms_->mdatoms(),
+                    integrator->localState_, integrator->upd_);
+        updateStepBuilder2.addUpdateElement(std::move(updatePosition));
+
+        updateStep2 = updateStepBuilder2.build(mdAtoms_->mdatoms(), wcycle_);
+    }
+    else if (inputrec_->eI == eiMD)
+    {
+        UpdateStepBuilder updateStepBuilder1;
+        updateStep1 = updateStepBuilder1.build(mdAtoms_->mdatoms(), wcycle_);
+
+        UpdateStepBuilder updateStepBuilder2;
+        auto              updateLeapFrog = std::make_unique<UpdateLeapfrog>(
+                    inputrec_->delta_t, stepManager->getStepAccessor(),
+                    inputrec_, mdAtoms_->mdatoms(), integrator->eKinData_.get(),
+                    integrator->localState_, integrator->f_.arrayRefWithPadding(), integrator->upd_);
+        updateStepBuilder2.addUpdateElement(std::move(updateLeapFrog));
+
+        updateStep2 = updateStepBuilder2.build(mdAtoms_->mdatoms(), wcycle_);
+    }
+    else
+    {
+        gmx_fatal(FARGS, "Unknown integrator.");
+    }
+
+    auto constrainCoordinates = std::make_unique<ConstrainCoordinates>(
+                stepManager->getStepAccessor(), mdAtoms_->mdatoms(),
+                integrator->localState_, integrator->upd_,
+                integrator->shake_vir_, constr_, fplog_, inputrec_);
+    logSignaller->registerCallback(constrainCoordinates->getLoggingCallback());
+    energySignaller->registerCallback(
+            constrainCoordinates->getCalculateEnergyCallback(),
+            constrainCoordinates->getCalculateVirialCallback(),
+            constrainCoordinates->getWriteEnergyCallback(),
+            constrainCoordinates->getCalculateFreeEnergyCallback());
+
+    std::unique_ptr<ConstrainVelocities> constrainVelocities;
+    if (inputrec_->eI == eiVV)
+    {
+        constrainVelocities = std::make_unique<ConstrainVelocities>(
+                    stepManager->getStepAccessor(),
+                    integrator->localState_, integrator->shake_vir_, constr_);
+        logSignaller->registerCallback(constrainVelocities->getLoggingCallback());
+        energySignaller->registerCallback(
+                constrainVelocities->getCalculateEnergyCallback(),
+                constrainVelocities->getCalculateVirialCallback(),
+                constrainVelocities->getWriteEnergyCallback(),
+                constrainVelocities->getCalculateFreeEnergyCallback());
+    }
+
+    auto finishUpdate = std::make_unique<FinishUpdateElement>(
+                mdAtoms_->mdatoms(), integrator->localState_, integrator->upd_,
+                inputrec_, wcycle_, constr_);
+
+    /*
+     * Pre and post loop elements
+     */
+    auto preLoopElement  = std::make_unique<PreLoopElement>(wcycle_);
+    auto postLoopElement = std::make_unique<PostLoopElement>(
+                stepManager->getStepAccessor(),
+                mdrunOptions_.verbose, mdrunOptions_.verboseStepPrintInterval,
+                fplog_, inputrec_, cr_, walltime_accounting_, wcycle_);
+
+    // We want to move the stepManager into the loop, but we also need to register
+    // the loops to the step manager. We need to think how to solve that more elegantly -
+    // for now, let's keep a function object to use the registration function.
+    auto lastStepCallbackRegistration = std::bind(
+                &SimpleStepManager::registerLastStepCallback, stepManager.get(), std::placeholders::_1);
+
+    auto innerLoopBuilder = std::make_unique<IntegratorLoopBuilder>();
+
+    innerLoopBuilder->addElement(std::move(logSignaller));
+    innerLoopBuilder->addElement(std::move(energySignaller));
+    innerLoopBuilder->addElement(std::move(preLoopElement));
+
+    innerLoopBuilder->addElement(std::move(forceElement));
+    innerLoopBuilder->addElement(std::move(updateStep1));
+    if (inputrec_->eI == eiVV)
+    {
+        innerLoopBuilder->addElement(std::move(constrainVelocities));
+        innerLoopBuilder->addElement(std::move(computeGlobalsElement));
+        innerLoopBuilder->addElement(
+                std::make_unique<ResetVForVV>(integrator->localState_));
+    }
+    innerLoopBuilder->addElement(std::move(trajectorySignaller));
+    innerLoopBuilder->addElement(std::move(updateStep2));
+    innerLoopBuilder->addElement(std::move(constrainCoordinates));
+    innerLoopBuilder->addElement(std::move(finishUpdate));
+
+    if (inputrec_->eI == eiMD)
+    {
+        innerLoopBuilder->addElement(std::move(computeGlobalsElement));
+    }
+
+    innerLoopBuilder->addElement(std::move(energyElement));
+    innerLoopBuilder->addElement(std::move(trajectoryWriter));
+
+    innerLoopBuilder->addElement(std::move(stepManager));
+    innerLoopBuilder->addElement(std::move(postLoopElement));
+
+    auto innerLoop = innerLoopBuilder->build(inputrec_->nstlist);
+    lastStepCallbackRegistration(innerLoop->getLastStepCallback());
+
+    auto outerLoopBuilder = std::make_unique<IntegratorLoopBuilder>();
+    outerLoopBuilder->addElement(std::move(neighborSearchSignaller));
+    outerLoopBuilder->addElement(std::move(domDecElement));
+    outerLoopBuilder->addElement(std::move(innerLoop));
+
+    auto outerLoop = outerLoopBuilder->build();
+    lastStepCallbackRegistration(outerLoop->getLastStepCallback());
+    integrator->setup(std::move(outerLoop), microState);
+
+    return std::move(integrator);
 }
 
 namespace legacy
