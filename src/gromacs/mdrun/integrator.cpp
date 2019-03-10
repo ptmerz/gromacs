@@ -43,10 +43,14 @@
 
 #include "integrator.h"
 
+#include "gromacs/domdec/domdec.h"
+#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdlib/stophandler.h"
+#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/fatalerror.h"
 
 namespace gmx
 {
@@ -252,6 +256,123 @@ Integrator::Integrator(
     doRerun(doRerun)
 {}
 
-}  // namespace legacy
+}   // namespace legacy
 
+PreLoopElement::PreLoopElement(gmx_wallcycle *wcycle) :
+    wcycle_(wcycle)
+{}
+
+ElementFunctionTypePtr PreLoopElement::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr PreLoopElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&PreLoopElement::run, this));
+}
+
+ElementFunctionTypePtr PreLoopElement::registerTeardown()
+{
+    return nullptr;
+}
+
+void PreLoopElement::run()
+{
+    wallcycle_start(wcycle_, ewcSTEP);
+}
+
+PostLoopElement::PostLoopElement(
+        StepAccessorPtr          stepAccessor,
+        bool                     doVerbose,
+        int                      verboseStepInterval,
+        FILE                    *fplog,
+        const t_inputrec        *inputrec,
+        const t_commrec         *cr,
+        gmx_walltime_accounting *walltime_accounting,
+        gmx_wallcycle           *wcycle) :
+    isMaster_(MASTER(cr)),
+    doDomainDecomposition_(DOMAINDECOMP(cr)),
+    doVerbose_(doVerbose),
+    verboseStepInterval_(verboseStepInterval),
+    isLoggingStep_(false),
+    isFirstStep_(true),
+    isLastStep_(false),
+    stepAccessor_(std::move(stepAccessor)),
+    fplog_(fplog),
+    inputrec_(inputrec),
+    cr_(cr),
+    walltime_accounting_(walltime_accounting),
+    wcycle_(wcycle)
+{}
+
+ElementFunctionTypePtr PostLoopElement::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr PostLoopElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&PostLoopElement::run, this));
+}
+
+ElementFunctionTypePtr PostLoopElement::registerTeardown()
+{
+    return nullptr;
+}
+
+void PostLoopElement::run()
+{
+    auto cycles = wallcycle_stop(wcycle_, ewcSTEP);
+    if (doDomainDecomposition_ && wcycle_)
+    {
+        dd_cycles_add(cr_->dd, cycles, ddCyclStep);
+    }
+
+    if (isMaster_)
+    {
+        auto step = (*stepAccessor_)();
+        if (isLoggingStep_)
+        {
+            if (fflush(fplog_) != 0)
+            {
+                gmx_fatal(FARGS, "Cannot flush logfile - maybe you are out of disk space?");
+            }
+        }
+
+        auto doVerboseThisStep = doVerbose_ &&
+            (step % verboseStepInterval_ == 0 || isFirstStep_ || isLastStep_);
+
+        /* Print the remaining wall clock time for the run */
+        if (doVerboseThisStep || gmx_got_usr_signal())
+        {
+            print_time(stderr, walltime_accounting_, step, inputrec_, cr_);
+            isFirstStep_ = false;
+        }
+    }
+}
+
+LastStepCallbackPtr PostLoopElement::getLastStepCallback()
+{
+    return std::make_unique<LastStepCallback>(
+            std::bind(&PostLoopElement::nextStepIsLast, this));
+}
+
+LoggingSignallerCallbackPtr PostLoopElement::getLoggingCallback()
+{
+    return std::make_unique<LoggingSignallerCallback>(
+            std::bind(&PostLoopElement::thisStepIsLoggingStep, this));
+}
+
+void PostLoopElement::nextStepIsLast()
+{
+    isLastStep_ = true;
+}
+
+void PostLoopElement::thisStepIsLoggingStep()
+{
+    isLoggingStep_ = true;
+}
 }  // namespace gmx

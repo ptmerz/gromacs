@@ -132,6 +132,62 @@ class SimpleStepManager final : public IIntegratorElement
         void setup();
 };
 
+class PreLoopElement : public IIntegratorElement
+{
+    public:
+        explicit PreLoopElement(gmx_wallcycle *wcycle);
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+    private:
+        void run();
+
+        gmx_wallcycle *wcycle_;
+};
+
+class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClient
+{
+    public:
+        PostLoopElement(
+            StepAccessorPtr          stepAccessor,
+            bool                     doVerbose,
+            int                      verboseStepInterval,
+            FILE                    *fplog,
+            const t_inputrec        *inputrec,
+            const t_commrec         *cr,
+            gmx_walltime_accounting *walltime_accounting,
+            gmx_wallcycle           *wcycle);
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        LastStepCallbackPtr getLastStepCallback();
+
+        LoggingSignallerCallbackPtr getLoggingCallback() override;
+    private:
+        void run();
+        void nextStepIsLast();
+        void thisStepIsLoggingStep();
+
+        const bool               isMaster_;
+        const bool               doDomainDecomposition_;
+        const bool               doVerbose_;
+        const int                verboseStepInterval_;
+        bool                     isLoggingStep_;
+        bool                     isFirstStep_;
+        bool                     isLastStep_;
+
+        StepAccessorPtr          stepAccessor_;
+
+        FILE                    *fplog_;
+        const t_inputrec        *inputrec_;
+        const t_commrec         *cr_;
+        gmx_walltime_accounting *walltime_accounting_;
+        gmx_wallcycle           *wcycle_;
+};
+
 namespace legacy
 {
 

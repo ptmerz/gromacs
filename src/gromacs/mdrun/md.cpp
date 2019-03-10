@@ -1572,7 +1572,6 @@ void gmx::legacy::Integrator::do_simple_md()
     t_graph                *graph = nullptr;
     gmx_shellfc_t          *shellfc;
     /* for FEP */
-    double                  cycles;
     t_extmass               MassQ;
     char                    sbuf[STEPSTRSIZE], sbuf2[STEPSTRSIZE];
 
@@ -2034,6 +2033,18 @@ void gmx::legacy::Integrator::do_simple_md()
     }
 
     /*
+     * Pre and post loop elements
+     */
+    auto preLoopElement  = std::make_unique<PreLoopElement>(wcycle);
+    auto postLoopElement = std::make_unique<PostLoopElement>(
+                stepManager->getStepAccessor(),
+                mdrunOptions.verbose, mdrunOptions.verboseStepPrintInterval,
+                fplog, inputrec, cr, walltime_accounting, wcycle);
+
+    auto preLoopElementRun  = preLoopElement->registerRun();
+    auto postLoopElementRun = postLoopElement->registerRun();
+
+    /*
      * Register element functions
      */
 
@@ -2154,7 +2165,10 @@ void gmx::legacy::Integrator::do_simple_md()
             (*energySignallerRun)();
         }
 
-        wallcycle_start(wcycle, ewcSTEP);
+        if (preLoopElementRun)
+        {
+            (*preLoopElementRun)();
+        }
 
         bLastStep = bLastStep || stopHandler->stoppingAfterCurrentStep(bNS);
 
@@ -2255,25 +2269,14 @@ void gmx::legacy::Integrator::do_simple_md()
                 }
             }
         }
-        /* Print the remaining wall clock time for the run */
-        if (isMasterSimMasterRank(ms, cr) &&
-            (do_verbose || gmx_got_usr_signal()))
+
+        if (postLoopElementRun)
         {
-            if (shellfc)
-            {
-                fprintf(stderr, "\n");
-            }
-            print_time(stderr, walltime_accounting, step, ir, cr);
+            (*postLoopElementRun)();
         }
 
         bFirstStep             = FALSE;
         bInitStep              = FALSE;
-
-        cycles = wallcycle_stop(wcycle, ewcSTEP);
-        if (DOMAINDECOMP(cr) && wcycle)
-        {
-            dd_cycles_add(cr->dd, cycles, ddCyclStep);
-        }
 
         // Reset flags
         bNS       = false;
