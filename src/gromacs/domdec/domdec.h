@@ -399,27 +399,27 @@ class DomDecElement :
 {
     public:
         DomDecElement(
-            int                 nstglobalcomm,
-            StepAccessorPtr     stepAccessor,
-            bool                isVerbose,
-            int                 verbosePrintInterval,
-            FILE               *fplog,
-            t_commrec          *cr,
-            const MDLogger     &mdlog,
-            Constraints        *constr,
-            t_inputrec         *inputrec,
-            gmx_mtop_t         *top_global,
-            t_state            *state_global,
-            MDAtoms            *mdAtoms,
-            t_nrnb             *nrnb,
-            gmx_wallcycle      *wcycle,
-            t_forcerec         *fr,
-            t_state            *localState,
-            gmx_localtop_t     *localTopology,
-            gmx_shellfc_t      *shellfc,
-            Update             *upd,
-            PaddedVector<RVec> *f,
-            bool               *shouldCheckNumberOfBondedInteractions);
+            int                                   nstglobalcomm,
+            StepAccessorPtr                       stepAccessor,
+            bool                                  isVerbose,
+            int                                   verbosePrintInterval,
+            FILE                                 *fplog,
+            t_commrec                            *cr,
+            const MDLogger                       &mdlog,
+            Constraints                          *constr,
+            t_inputrec                           *inputrec,
+            gmx_mtop_t                           *top_global,
+            t_state                              *state_global,
+            MDAtoms                              *mdAtoms,
+            t_nrnb                               *nrnb,
+            gmx_wallcycle                        *wcycle,
+            t_forcerec                           *fr,
+            t_state                              *localState,
+            gmx_localtop_t                       *localTopology,
+            gmx_shellfc_t                        *shellfc,
+            Update                               *upd,
+            PaddedVector<RVec>                   *f,
+            CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback);
 
         ElementFunctionTypePtr registerSetup() override;
         ElementFunctionTypePtr registerRun() override;
@@ -430,7 +430,6 @@ class DomDecElement :
         LastStepCallbackPtr getLastStepCallback() override;
 
     private:
-        bool      *shouldCheckNumberOfBondedInteractions_;
         bool       isNSStep_;
         const bool isVerbose_;
         const int  verbosePrintInterval_;
@@ -439,6 +438,9 @@ class DomDecElement :
 
         //! Global communication interval
         const int nstglobalcomm_;
+
+        //! Callback to request checking of bonded interactions
+        CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback_;
 
         void init();
         void run();

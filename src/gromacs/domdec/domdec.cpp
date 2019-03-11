@@ -3110,34 +3110,34 @@ gmx::ElementFunctionTypePtr gmx::DomDecElement::registerTeardown()
 }
 
 DomDecElement::DomDecElement(
-        int                 nstglobalcomm,
-        StepAccessorPtr     stepAccessor,
-        bool                isVerbose,
-        int                 verbosePrintInterval,
-        FILE               *fplog,
-        t_commrec          *cr,
-        const MDLogger     &mdlog,
-        Constraints        *constr,
-        t_inputrec         *inputrec,
-        gmx_mtop_t         *top_global,
-        t_state            *state_global,
-        MDAtoms            *mdAtoms,
-        t_nrnb             *nrnb,
-        gmx_wallcycle      *wcycle,
-        t_forcerec         *fr,
-        t_state            *localState,
-        gmx_localtop_t     *localTopology,
-        gmx_shellfc_t      *shellfc,
-        Update             *upd,
-        PaddedVector<RVec> *f,
-        bool               *shouldCheckNumberOfBondedInteractions) :
-    shouldCheckNumberOfBondedInteractions_(shouldCheckNumberOfBondedInteractions),
+        int                                   nstglobalcomm,
+        StepAccessorPtr                       stepAccessor,
+        bool                                  isVerbose,
+        int                                   verbosePrintInterval,
+        FILE                                 *fplog,
+        t_commrec                            *cr,
+        const MDLogger                       &mdlog,
+        Constraints                          *constr,
+        t_inputrec                           *inputrec,
+        gmx_mtop_t                           *top_global,
+        t_state                              *state_global,
+        MDAtoms                              *mdAtoms,
+        t_nrnb                               *nrnb,
+        gmx_wallcycle                        *wcycle,
+        t_forcerec                           *fr,
+        t_state                              *localState,
+        gmx_localtop_t                       *localTopology,
+        gmx_shellfc_t                        *shellfc,
+        Update                               *upd,
+        PaddedVector<RVec>                   *f,
+        CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback) :
     isNSStep_(false),
     isVerbose_(isVerbose),
     verbosePrintInterval_(verbosePrintInterval),
     isFirstStep_(true),
     isLastStep_(false),
     nstglobalcomm_(nstglobalcomm),
+    checkNOfBondedInteractionsCallback_(std::move(checkNOfBondedInteractionsCallback)),
     stepAccessor_(std::move(stepAccessor)),
     fplog_(fplog),
     cr_(cr),
@@ -3181,7 +3181,7 @@ void gmx::DomDecElement::init()
                             localState_, f_, mdAtoms_, localTopology_, fr_,
                             vsite, constr_,
                             nrnb_, wcycle, verbose);
-        *shouldCheckNumberOfBondedInteractions_ = true;
+        (*checkNOfBondedInteractionsCallback_)();
         upd_->setNumAtoms(localState_->natoms);
     }
     else
@@ -3226,7 +3226,7 @@ void gmx::DomDecElement::run()
                         vsite, constr_,
                         nrnb_, wcycle_,
                         doVerbose);  // was: do_verbose && !bPMETunePrinting
-    *shouldCheckNumberOfBondedInteractions_ = true;
+    (*checkNOfBondedInteractionsCallback_)();
     upd_->setNumAtoms(localState_->natoms);
     isNSStep_    = false;
     isFirstStep_ = false;

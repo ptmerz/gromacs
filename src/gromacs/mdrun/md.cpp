@@ -1559,12 +1559,10 @@ void gmx::legacy::Integrator::do_simple_md()
     // alias to avoid a large ripple of nearly useless changes.
     // t_inputrec is being replaced by IMdpOptionsProvider, so this
     // will go away eventually.
-    t_inputrec             *ir   = inputrec;
-    gmx_bool                bGStat, bCalcVir = false, bCalcEner = false;
-    gmx_bool                bNS, bStopCM,
-                            bFirstStep, bInitStep, bLastStep = FALSE;
-    gmx_bool                do_ene = false, do_log, do_verbose;
-    int                     cglo_flags;
+    t_inputrec             *ir       = inputrec;
+    gmx_bool                bCalcVir = false, bCalcEner = false;
+    gmx_bool                bNS, bFirstStep, bInitStep, bLastStep = FALSE;
+    gmx_bool                do_ene    = false, do_log, do_verbose;
     tensor                  force_vir = {{0}}, shake_vir = {{0}}, total_vir = {{0}}, pres = {{0}};
     int                     i, m;
     rvec                    mu_tot;
@@ -1576,8 +1574,6 @@ void gmx::legacy::Integrator::do_simple_md()
     t_graph                *graph = nullptr;
     gmx_groups_t           *groups;
     gmx_shellfc_t          *shellfc;
-    gmx_bool                bSumEkinhOld;
-    gmx_bool                bTemp, bPres;
     real                    dvdl_constr;
     matrix                  lastbox;
     /* for FEP */
@@ -1585,16 +1581,7 @@ void gmx::legacy::Integrator::do_simple_md()
     t_extmass               MassQ;
     char                    sbuf[STEPSTRSIZE], sbuf2[STEPSTRSIZE];
 
-    /* Domain decomposition could incorrectly miss a bonded
-       interaction, but checking for that requires a global
-       communication stage, which does not otherwise happen in DD
-       code. So we do that alongside the first global energy reduction
-       after a new DD is made. These variables handle whether the
-       check happens, and the result it returns. */
-    bool              shouldCheckNumberOfBondedInteractions = false;
-    int               totalNumberOfBondedInteractions       = -1;
-
-    SimulationSignals signals;
+    SimulationSignals       signals;
     // Most global communnication stages don't propagate mdrun
     // signals, and will use this object to achieve that.
     SimulationSignaller nullSignaller(nullptr, nullptr, nullptr, false, false);
@@ -1728,6 +1715,26 @@ void gmx::legacy::Integrator::do_simple_md()
         state = state_global;
     }
 
+    t_vcm vcm(top_global->groups, *ir);
+    reportComRemovalInfo(fplog, vcm);
+
+    auto computeGlobalsElement = std::make_unique<ComputeGlobalsElement>(
+                stepManager->getStepAccessor(), state, enerd,
+                force_vir, shake_vir, total_vir, pres, mu_tot,
+                fplog, mdlog, cr, inputrec, mdAtoms->mdatoms(),
+                nrnb, fr, wcycle, top_global, &top, ekind, constr,
+                &vcm, mdrunOptions.globalCommunicationInterval);
+
+    energySignaller->registerCallback(
+            computeGlobalsElement->getCalculateEnergyCallback(),
+            computeGlobalsElement->getCalculateVirialCallback(),
+            computeGlobalsElement->getWriteEnergyCallback(),
+            computeGlobalsElement->getCalculateFreeEnergyCallback());
+
+    auto computeGlobalsElementSetup    = computeGlobalsElement->registerSetup();
+    auto computeGlobalsElementRun      = computeGlobalsElement->registerRun();
+    auto computeGlobalsElementTeardown = computeGlobalsElement->registerTeardown();
+
     /*
      * Build the domdec element (needs valid state pointer)
      */
@@ -1737,7 +1744,7 @@ void gmx::legacy::Integrator::do_simple_md()
                 fplog, cr, mdlog, constr, inputrec, top_global,
                 state_global, mdAtoms, nrnb, wcycle, fr,
                 state, &top, shellfc, &upd, &f,
-                &shouldCheckNumberOfBondedInteractions);
+                computeGlobalsElement->getCheckNOfBondedInteractionsCallback());
 
     auto domDecElementSetup    = domDecElement->registerSetup();
     auto domDecElementRun      = domDecElement->registerRun();
@@ -1866,46 +1873,15 @@ void gmx::legacy::Integrator::do_simple_md()
         }
     }
 
-    bStopCM = (ir->comm_mode != ecmNO);
-
     if (continuationOptions.haveReadEkin)
     {
         restore_ekinstate_from_state(cr, ekind, &state_global->ekinstate);
     }
 
-    cglo_flags = (CGLO_INITIALIZATION | CGLO_TEMPERATURE | CGLO_GSTAT
-                  | (EI_VV(ir->eI) ? CGLO_PRESSURE : 0)
-                  | (EI_VV(ir->eI) ? CGLO_CONSTRAINT : 0)
-                  | (continuationOptions.haveReadEkin ? CGLO_READEKIN : 0));
-
-    bSumEkinhOld = FALSE;
-
-    t_vcm vcm(top_global->groups, *ir);
-    reportComRemovalInfo(fplog, vcm);
-
-    /* To minimize communication, compute_globals computes the COM velocity
-     * and the kinetic energy for the velocities without COM motion removed.
-     * Thus to get the kinetic energy without the COM contribution, we need
-     * to call compute_globals twice.
-     */
-    for (int cgloIteration = 0; cgloIteration < (bStopCM ? 2 : 1); cgloIteration++)
+    if (computeGlobalsElementSetup)
     {
-        int cglo_flags_iteration = cglo_flags;
-        if (bStopCM && cgloIteration == 0)
-        {
-            cglo_flags_iteration |= CGLO_STOPCM;
-            cglo_flags_iteration &= ~CGLO_TEMPERATURE;
-        }
-        compute_globals(fplog, gstat, cr, ir, fr, ekind, state, mdatoms, nrnb, &vcm,
-                        nullptr, enerd, force_vir, shake_vir, total_vir, pres, mu_tot,
-                        constr, &nullSignaller, state->box,
-                        &accumulateGlobals,
-                        &totalNumberOfBondedInteractions, &bSumEkinhOld, cglo_flags_iteration
-                        | (shouldCheckNumberOfBondedInteractions ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0));
+        (*computeGlobalsElementSetup)();
     }
-    checkNumberOfBondedInteractions(mdlog, cr, totalNumberOfBondedInteractions,
-                                    top_global, &top, state,
-                                    &shouldCheckNumberOfBondedInteractions);
 
     /* need to make an initiation call to get the Trotter variables set, as well as other constants for non-trotter
        temperature control */
@@ -1998,7 +1974,6 @@ void gmx::legacy::Integrator::do_simple_md()
     bFirstStep       = TRUE;
     /* Skip the first Nose-Hoover integration when we get the state from tpx */
     bInitStep        = TRUE;
-    bSumEkinhOld     = FALSE;
 
     bool simulationsShareState = false;
     int  nstSignalComm         = nstglobalcomm;
@@ -2049,9 +2024,6 @@ void gmx::legacy::Integrator::do_simple_md()
 
         wallcycle_start(wcycle, ewcSTEP);
 
-        /* Stop Center of Mass motion */
-        bStopCM = (ir->comm_mode != ecmNO && do_per_step(step, ir->nstcomm));
-
         bLastStep = bLastStep || stopHandler->stoppingAfterCurrentStep(bNS);
 
         do_verbose = mdrunOptions.verbose &&
@@ -2066,10 +2038,6 @@ void gmx::legacy::Integrator::do_simple_md()
         {
             print_ebin_header(fplog, step, t); /* can we improve the information printed here? */
         }
-
-        /* Do we need global communication ? */
-        bGStat = (bCalcVir || bCalcEner || bStopCM ||
-                  do_per_step(step, nstglobalcomm));
 
         if (forceRun)
         {
@@ -2110,48 +2078,14 @@ void gmx::legacy::Integrator::do_simple_md()
                                  constr,
                                  bCalcVir, do_log, do_ene);
             wallcycle_start(wcycle, ewcUPDATE);
-            /* if VV, compute the pressure and constraints */
-            /* For VV2, we strictly only need this if using pressure
-             * control, but we really would like to have accurate pressures
-             * printed out.
-             * Think about ways around this in the future?
-             * For now, keep this choice in comments.
-             */
-            /*bPres = (ir->eI==eiVV || inputrecNptTrotter(ir)); */
-            /*bTemp = ((ir->eI==eiVV &&(!bInitStep)) || (ir->eI==eiVVAK && inputrecNptTrotter(ir)));*/
-            bPres = TRUE;
-            bTemp = TRUE;
-            /* for vv, the first half of the integration actually corresponds to the previous step.
-               So we need information from the last step in the first half of the integration */
-            if (bGStat || do_per_step(step-1, nstglobalcomm))
+
+            if (computeGlobalsElementRun)
             {
                 wallcycle_stop(wcycle, ewcUPDATE);
-                compute_globals(fplog, gstat, cr, ir, fr, ekind, state, mdatoms, nrnb, &vcm,
-                                wcycle, enerd, force_vir, shake_vir, total_vir, pres, mu_tot,
-                                constr, &nullSignaller, state->box,
-                                &accumulateGlobals,
-                                &totalNumberOfBondedInteractions, &bSumEkinhOld,
-                                (bGStat ? CGLO_GSTAT : 0)
-                                | (bCalcEner ? CGLO_ENERGY : 0)
-                                | (bTemp ? CGLO_TEMPERATURE : 0)
-                                | (bPres ? CGLO_PRESSURE : 0)
-                                | (bPres ? CGLO_CONSTRAINT : 0)
-                                | (bStopCM ? CGLO_STOPCM : 0)
-                                | (shouldCheckNumberOfBondedInteractions ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
-                                | CGLO_SCALEEKIN
-                                );
-                /* explanation of above:
-                   a) We compute Ekin at the full time step
-                   if 1) we are using the AveVel Ekin, and it's not the
-                   initial step, or 2) if we are using AveEkin, but need the full
-                   time step kinetic energy for the pressure (always true now, since we want accurate statistics).
-                   b) If we are using EkinAveEkin for the kinetic energy for the temperature control, we still feed in
-                   EkinAveVel because it's needed for the pressure */
-                checkNumberOfBondedInteractions(mdlog, cr, totalNumberOfBondedInteractions,
-                                                top_global, &top, state,
-                                                &shouldCheckNumberOfBondedInteractions);
+                (*computeGlobalsElementRun)();
                 wallcycle_start(wcycle, ewcUPDATE);
             }
+
             /* if it's the initial step, we performed this first step just to get the constraint virial */
             if (ir->eI == eiVV && bInitStep)
             {
@@ -2169,6 +2103,7 @@ void gmx::legacy::Integrator::do_simple_md()
          * the update.
          */
         const bool checkpointing = false;
+        const bool bSumEkinhOld  = false;
         do_md_trajectory_writing(fplog, cr, nfile, fnm, step, step - inputrec->init_step, t,
                                  ir, state, state_global, observablesHistory,
                                  top_global, fr,
@@ -2213,58 +2148,13 @@ void gmx::legacy::Integrator::do_simple_md()
                       nrnb, wcycle, &upd, constr);
 
         /* ############## IF NOT VV, Calculate globals HERE  ############ */
-        /* With Leap-Frog we can skip compute_globals at
-         * non-communication steps, but we need to calculate
-         * the kinetic energy one step before communication.
-         */
+        if (!EI_VV(ei) && computeGlobalsElementRun)
         {
-            // Organize to do inter-simulation signalling on steps if
-            // and when algorithms require it.
-            bool doInterSimSignal = (simulationsShareState && do_per_step(step, nstSignalComm));
-
-            if (bGStat || (!EI_VV(ir->eI) && do_per_step(step+1, nstglobalcomm)) || doInterSimSignal)
-            {
-                // Since we're already communicating at this step, we
-                // can propagate intra-simulation signals. Note that
-                // check_nstglobalcomm has the responsibility for
-                // choosing the value of nstglobalcomm that is one way
-                // bGStat becomes true, so we can't get into a
-                // situation where e.g. checkpointing can't be
-                // signalled.
-                bool                doIntraSimSignal = true;
-                SimulationSignaller signaller(&signals, cr, ms, doInterSimSignal, doIntraSimSignal);
-
-                compute_globals(fplog, gstat, cr, ir, fr, ekind, state, mdatoms, nrnb, &vcm,
-                                wcycle, enerd, force_vir, shake_vir, total_vir, pres, mu_tot,
-                                constr, &signaller,
-                                lastbox,
-                                &accumulateGlobals,
-                                &totalNumberOfBondedInteractions, &bSumEkinhOld,
-                                (bGStat ? CGLO_GSTAT : 0)
-                                | (!EI_VV(ir->eI) && bCalcEner ? CGLO_ENERGY : 0)
-                                | (!EI_VV(ir->eI) && bStopCM ? CGLO_STOPCM : 0)
-                                | (!EI_VV(ir->eI) ? CGLO_TEMPERATURE : 0)
-                                | (!EI_VV(ir->eI) ? CGLO_PRESSURE : 0)
-                                | CGLO_CONSTRAINT
-                                | (shouldCheckNumberOfBondedInteractions ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
-                                );
-                checkNumberOfBondedInteractions(mdlog, cr, totalNumberOfBondedInteractions,
-                                                top_global, &top, state,
-                                                &shouldCheckNumberOfBondedInteractions);
-            }
+            (*computeGlobalsElementRun)();
         }
 
         /* ################# END UPDATE STEP 2 ################# */
         /* #### We now have r(t+dt) and v(t+dt/2)  ############# */
-
-        /* The coordinates (x) were unshifted in update */
-        if (!bGStat)
-        {
-            /* We will not sum ekinh_old,
-             * so signal that we still have to do it.
-             */
-            bSumEkinhOld = TRUE;
-        }
 
         if (bCalcEner)
         {
@@ -2365,6 +2255,10 @@ void gmx::legacy::Integrator::do_simple_md()
     if (domDecElementTeardown)
     {
         (*domDecElementTeardown)();
+    }
+    if (computeGlobalsElementTeardown)
+    {
+        (*computeGlobalsElementTeardown)();
     }
 
     /* Closing TNG files can include compressing data. Therefore it is good to do that

@@ -37,12 +37,17 @@
 #ifndef GMX_MDLIB_MD_SUPPORT_H
 #define GMX_MDLIB_MD_SUPPORT_H
 
+#include "gromacs/mdlib/simulationsignal.h"
 #include "gromacs/mdlib/vcm.h"
+#include "gromacs/mdrun/integratorinterfaces.h"
+#include "gromacs/mdrunutility/accumulateglobals.h"
 #include "gromacs/timing/wallcycle.h"
 
 struct gmx_ekindata_t;
 struct gmx_enerdata_t;
 struct gmx_global_stat;
+struct gmx_localtop_t;
+struct gmx_mtop_t;
 struct gmx_multisim_t;
 struct gmx_signalling_t;
 struct t_extmass;
@@ -55,7 +60,6 @@ struct t_trxframe;
 
 namespace gmx
 {
-class AccumulateGlobals;
 class Constraints;
 class MDLogger;
 class SimulationSignaller;
@@ -132,5 +136,115 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
                      int *totalNumberOfBondedInteractions,
                      gmx_bool *bSumEkinhOld, int flags);
 /* Compute global variables during integration */
+
+namespace gmx
+{
+class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignallerClient
+{
+    public:
+        ComputeGlobalsElement(
+            StepAccessorPtr       stepAccessor,
+            t_state              *localState,
+            gmx_enerdata_t       *enerd,
+            tensor                force_vir,
+            tensor                shake_vir,
+            tensor                total_vir,
+            tensor                pres,
+            rvec                  mu_tot,
+            FILE                 *fplog,
+            const MDLogger       &mdlog,
+            t_commrec            *cr,
+            t_inputrec           *inputrec,
+            t_mdatoms            *mdatoms,
+            t_nrnb               *nrnb,
+            t_forcerec           *fr,
+            gmx_wallcycle_t       wcycle,
+            gmx_mtop_t           *global_top,
+            gmx_localtop_t       *top,
+            gmx_ekindata_t       *ekind,
+            Constraints          *constr,
+            t_vcm                *vcm,
+            int                   globalCommunicationInterval);
+        ~ComputeGlobalsElement() override;
+
+        ElementFunctionTypePtr registerSetup() override;
+        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr registerTeardown() override;
+
+        void globalReductionNeeded();
+
+        CheckNOfBondedInteractionsCallbackPtr getCheckNOfBondedInteractionsCallback();
+
+        EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateVirialCallback() override;
+        EnergySignallerCallbackPtr getWriteEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() override;
+
+    private:
+        void setup();
+        void run();
+        void needToCheckNumberOfBondedInteractions();
+
+        const bool doStopCM_;
+        int        nstcomm_;
+        bool       needGlobalReduction_;
+        bool       needEnergyReduction_;
+        int        nstglobalcomm_;
+        bool       isVV_;
+        bool       isLF_;
+
+        /* Domain decomposition could incorrectly miss a bonded
+           interaction, but checking for that requires a global
+           communication stage, which does not otherwise happen in DD
+           code. So we do that alongside the first global energy reduction
+           after a new DD is made. These variables handle whether the
+           check happens, and the result it returns. */
+        int                    totalNumberOfBondedInteractions_;
+        bool                   shouldCheckNumberOfBondedInteractions_;
+
+        gmx_global_stat       *gstat_;
+        AccumulateGlobals      accumulateGlobals_;
+
+        StepAccessorPtr        stepAccessor_;
+
+        // TODO: Rethink access to these
+        //! Handles logging.
+        FILE             *fplog_;
+        //! Handles logging.
+        const MDLogger   &mdlog_;
+        //! Handles communication.
+        t_commrec        *cr_;
+        //! Contains user input mdp options.
+        t_inputrec       *inputrec_;
+        //! Full system topology.
+        const gmx_mtop_t *top_global_;
+        //! Atom parameters for this domain.
+        t_mdatoms        *mdatoms_;
+        //! The local state
+        t_state          *localState_;
+        //! Energy data structure
+        gmx_enerdata_t   *enerd_;
+        //! Virials
+        rvec             *force_vir_, *shake_vir_, *total_vir_, *pres_;
+        //! Total dipole moment (I guess...)
+        real            * mu_tot_;
+        //! The kinetic energy data structure
+        gmx_ekindata_t   *ekind_;
+        //! Handles constraints.
+        Constraints      *constr_;
+        //! Manages flop accounting.
+        t_nrnb           *nrnb_;
+        //! Manages wall cycle accounting.
+        gmx_wallcycle    *wcycle_;
+        //! Parameters for force calculations.
+        t_forcerec       *fr_;
+        //! Center of mass motion removal
+        t_vcm            *vcm_;
+        //! Local topology
+        gmx_localtop_t   *top_;
+        //! Signals
+        SimulationSignals signals_;
+};
+}
 
 #endif

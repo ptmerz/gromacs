@@ -45,6 +45,7 @@
 #include <algorithm>
 
 #include "gromacs/domdec/domdec.h"
+#include "gromacs/domdec/partition.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/math/vec.h"
@@ -634,4 +635,239 @@ void set_state_entries(t_state *state, const t_inputrec *ir)
     {
         state->flags |= (1<<estPULLCOMPREVSTEP);
     }
+}
+
+namespace gmx
+{
+ComputeGlobalsElement::ComputeGlobalsElement(
+        StepAccessorPtr stepAccessor,
+        t_state        *localState,
+        gmx_enerdata_t *enerd,
+        tensor          force_vir,
+        tensor          shake_vir,
+        tensor          total_vir,
+        tensor          pres,
+        rvec            mu_tot,
+        FILE           *fplog,
+        const MDLogger &mdlog,
+        t_commrec      *cr,
+        t_inputrec     *inputrec,
+        t_mdatoms      *mdatoms,
+        t_nrnb         *nrnb,
+        t_forcerec     *fr,
+        gmx_wallcycle_t wcycle,
+        gmx_mtop_t     *global_top,
+        gmx_localtop_t *top,
+        gmx_ekindata_t *ekind,
+        Constraints    *constr,
+        t_vcm          *vcm,
+        int             globalCommunicationInterval) :
+    doStopCM_(inputrec->comm_mode != ecmNO),
+    nstcomm_(inputrec->nstcomm),
+    needGlobalReduction_(false),
+    needEnergyReduction_(false),
+    isVV_(EI_VV(inputrec->eI)),
+    isLF_(EI_MD(inputrec->eI) && !EI_VV(inputrec->eI)),
+    totalNumberOfBondedInteractions_(0),
+    shouldCheckNumberOfBondedInteractions_(false),
+    stepAccessor_(std::move(stepAccessor)),
+    fplog_(fplog),
+    mdlog_(mdlog),
+    cr_(cr),
+    inputrec_(inputrec),
+    top_global_(global_top),
+    mdatoms_(mdatoms),
+    localState_(localState),
+    enerd_(enerd),
+    force_vir_(force_vir),
+    shake_vir_(shake_vir),
+    total_vir_(total_vir),
+    pres_(pres),
+    mu_tot_(mu_tot),
+    ekind_(ekind),
+    constr_(constr),
+    nrnb_(nrnb),
+    wcycle_(wcycle),
+    fr_(fr),
+    vcm_(vcm),
+    top_(top),
+    signals_()
+{
+    gstat_         = global_stat_init(inputrec_);
+    nstglobalcomm_ = check_nstglobalcomm(mdlog, globalCommunicationInterval, inputrec, cr);
+}
+
+ComputeGlobalsElement::~ComputeGlobalsElement()
+{
+    global_stat_destroy(gstat_);
+}
+
+ElementFunctionTypePtr ComputeGlobalsElement::registerSetup()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ComputeGlobalsElement::setup, this));
+}
+
+ElementFunctionTypePtr ComputeGlobalsElement::registerRun()
+{
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ComputeGlobalsElement::run, this));
+}
+
+ElementFunctionTypePtr ComputeGlobalsElement::registerTeardown()
+{
+    return nullptr;
+}
+
+void ComputeGlobalsElement::globalReductionNeeded()
+{
+    needGlobalReduction_ = true;
+}
+
+void ComputeGlobalsElement::setup()
+{
+    SimulationSignaller nullSignaller(nullptr, nullptr, nullptr, false, false);
+    int                 cglo_flags = (CGLO_INITIALIZATION | CGLO_TEMPERATURE | CGLO_GSTAT
+                                      | (isVV_ ? CGLO_PRESSURE : 0)
+                                      | (isVV_ ? CGLO_CONSTRAINT : 0)
+                                      | (false ? CGLO_READEKIN : 0)); // TODO: We're not reading anything right now...
+
+    bool bSumEkinhOld = false;
+
+    /* To minimize communication, compute_globals computes the COM velocity
+     * and the kinetic energy for the velocities without COM motion removed.
+     * Thus to get the kinetic energy without the COM contribution, we need
+     * to call compute_globals twice.
+     */
+    for (int cgloIteration = 0; cgloIteration < (doStopCM_ ? 2 : 1); cgloIteration++)
+    {
+        int cglo_flags_iteration = cglo_flags;
+        if (doStopCM_ && cgloIteration == 0)
+        {
+            cglo_flags_iteration |= CGLO_STOPCM;
+            cglo_flags_iteration &= ~CGLO_TEMPERATURE;
+        }
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState_, mdatoms_, nrnb_, vcm_,
+                        nullptr, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
+                        constr_, &nullSignaller, localState_->box,
+                        &accumulateGlobals_,
+                        &totalNumberOfBondedInteractions_, &bSumEkinhOld, cglo_flags_iteration
+                        | (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0));
+    }
+    checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
+                                    top_global_, top_, localState_,
+                                    &shouldCheckNumberOfBondedInteractions_);
+}
+
+void ComputeGlobalsElement::run()
+{
+
+    auto step = (*stepAccessor_)();
+
+    bool needComReduction = doStopCM_ && do_per_step(step, nstcomm_);
+
+    needGlobalReduction_ = needGlobalReduction_ || needComReduction || do_per_step(step, nstglobalcomm_);
+
+    /* With Leap-Frog we can skip compute_globals at
+     * non-communication steps, but we need to calculate
+     * the kinetic energy one step before communication.
+     */
+    /* for vv, the first half of the integration actually corresponds to the previous step.
+       So we need information from the last step in the first half of the integration */
+
+    if (needGlobalReduction_ ||
+        (isLF_ && do_per_step(step+1, nstglobalcomm_)) ||
+        (isVV_ && do_per_step(step-1, nstglobalcomm_)))
+    {
+        // Since we're already communicating at this step, we
+        // can propagate intra-simulation signals. Note that
+        // check_nstglobalcomm has the responsibility for
+        // choosing the value of nstglobalcomm that is one way
+        // bGStat becomes true, so we can't get into a
+        // situation where e.g. checkpointing can't be
+        // signalled.
+        gmx_multisim_t     *ms               = nullptr;
+        bool                doInterSimSignal = false;
+        bool                doIntraSimSignal = true;
+        SimulationSignaller signaller(&signals_, cr_, ms, doInterSimSignal, doIntraSimSignal);
+
+        bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
+
+        int                 flags =
+            CGLO_TEMPERATURE |     // TODO: This used not to be done every time when doing vv - why?
+            CGLO_PRESSURE |        // TODO: This used not to be done every time when doing vv - why?
+            CGLO_CONSTRAINT;       // TODO: This used to be done in a second reduction with vv - check!
+
+        if (needGlobalReduction_)
+        {
+            flags |= CGLO_GSTAT;
+        }
+
+        if (needEnergyReduction_)
+        {
+            flags |= CGLO_ENERGY;
+        }
+
+        if (needComReduction)
+        {
+            flags |= CGLO_STOPCM;
+        }
+
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState_, mdatoms_, nrnb_, vcm_,
+                        wcycle_, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
+                        constr_, &signaller,
+                        localState_->box,  // TODO: was lastbox - might be a problem when box changes!
+                        &accumulateGlobals_,
+                        &totalNumberOfBondedInteractions_, &bSumEkinhOld,
+                        flags |
+                        (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
+                        );
+        checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
+                                        top_global_, top_, localState_,
+                                        &shouldCheckNumberOfBondedInteractions_);
+
+        needGlobalReduction_ = false;
+    }
+}
+
+void ComputeGlobalsElement::needToCheckNumberOfBondedInteractions()
+{
+    shouldCheckNumberOfBondedInteractions_ = true;
+}
+
+CheckNOfBondedInteractionsCallbackPtr ComputeGlobalsElement::getCheckNOfBondedInteractionsCallback()
+{
+    return std::make_unique<CheckNOfBondedInteractionsCallback>(
+            std::bind(&ComputeGlobalsElement::needToCheckNumberOfBondedInteractions, this));
+}
+
+EnergySignallerCallbackPtr ComputeGlobalsElement::getCalculateEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){
+                                        this->needEnergyReduction_ = true;
+                                        this->needGlobalReduction_ = true;
+                                    }));
+}
+
+EnergySignallerCallbackPtr ComputeGlobalsElement::getCalculateVirialCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){this->needGlobalReduction_ = true; }));
+}
+
+EnergySignallerCallbackPtr ComputeGlobalsElement::getWriteEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            EnergySignallerCallback([this](){
+                                        this->needEnergyReduction_ = true;
+                                        this->needGlobalReduction_ = true;
+                                    }));
+}
+
+EnergySignallerCallbackPtr ComputeGlobalsElement::getCalculateFreeEnergyCallback()
+{
+    return nullptr;
+}
+
 }

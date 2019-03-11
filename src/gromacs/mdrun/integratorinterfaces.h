@@ -137,6 +137,12 @@ class IEnergySignallerClient
 
         virtual ~IEnergySignallerClient() = default;
 };
+
+/*! Callback allowing domdec element to signal global reduction element
+ * that bonded interactions need to be checked
+ */
+typedef std::function<void()> CheckNOfBondedInteractionsCallback;
+typedef std::unique_ptr<CheckNOfBondedInteractionsCallback> CheckNOfBondedInteractionsCallbackPtr;
 }      // namespace gmx
 
 #endif //GMX_MDRUN_INTEGRATORINTERFACES_H
