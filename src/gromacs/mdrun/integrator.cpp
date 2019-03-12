@@ -564,8 +564,9 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
         auto fElement = std::make_unique<ShellFCElement>(
                     inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_), mdrunOptions_.verbose,
                     stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
-                    integrator->localState_, &integrator->f_, integrator->enerd_, integrator->force_vir_,
-                    integrator->mu_tot_, fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
+                    integrator->localState_, integrator->f_.arrayRefWithPadding(),
+                    integrator->enerd_, integrator->force_vir_, integrator->mu_tot_,
+                    fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
                     fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups,
                     constr_, integrator->shellfc_, top_global_, ppForceWorkload_);
 
@@ -585,8 +586,9 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
         auto fElement = std::make_unique<ForceElement>(
                     inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_),
                     stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
-                    integrator->localState_, &integrator->f_, integrator->enerd_, integrator->force_vir_,
-                    integrator->mu_tot_, fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
+                    integrator->localState_, integrator->f_.arrayRefWithPadding(),
+                    integrator->enerd_, integrator->force_vir_, integrator->mu_tot_,
+                    fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
                     fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups, ppForceWorkload_);
 
         energySignaller->registerCallback(

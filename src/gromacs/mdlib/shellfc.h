@@ -121,30 +121,30 @@ class ShellFCElement :
     public:
         //! Constructor
         ShellFCElement(
-            bool                isDynamicBox,
-            bool                isDomDec,
-            bool                isVerbose,
-            StepAccessorPtr     stepAccessor,
-            TimeAccessorPtr     timeAccessor,
-            t_state            *localState,
-            PaddedVector<RVec> *f,
-            gmx_enerdata_t     *enerd,
-            tensor              force_vir,
-            rvec                mu_tot,
-            FILE               *fplog,
-            const t_commrec    *cr,
-            const t_inputrec   *inputrec,
-            const t_mdatoms    *mdatoms,
-            t_nrnb             *nrnb,
-            t_forcerec         *fr,
-            t_fcdata           *fcd,
-            gmx_wallcycle      *wcycle,
-            gmx_localtop_t     *top,
-            const gmx_groups_t *groups,
-            Constraints        *constr,
-            gmx_shellfc_t      *shellfc,
-            const gmx_mtop_t   *top_global,
-            PpForceWorkload    *ppForceWorkload);
+            bool                      isDynamicBox,
+            bool                      isDomDec,
+            bool                      isVerbose,
+            StepAccessorPtr           stepAccessor,
+            TimeAccessorPtr           timeAccessor,
+            t_state                  *localState,
+            ArrayRefWithPadding<RVec> f,
+            gmx_enerdata_t           *enerd,
+            tensor                    force_vir,
+            rvec                      mu_tot,
+            FILE                     *fplog,
+            const t_commrec          *cr,
+            const t_inputrec         *inputrec,
+            const t_mdatoms          *mdatoms,
+            t_nrnb                   *nrnb,
+            t_forcerec               *fr,
+            t_fcdata                 *fcd,
+            gmx_wallcycle            *wcycle,
+            gmx_localtop_t           *top,
+            const gmx_groups_t       *groups,
+            Constraints              *constr,
+            gmx_shellfc_t            *shellfc,
+            const gmx_mtop_t         *top_global,
+            PpForceWorkload          *ppForceWorkload);
 
         //! IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -179,26 +179,26 @@ class ShellFCElement :
         void teardown();
 
         // TODO: Rethink access to these
-        t_state            *localState_;
-        PaddedVector<RVec> *f_;
-        gmx_enerdata_t     *enerd_;
-        real               *mu_tot_;
-        FILE               *fplog_;
-        const t_commrec    *cr_;
-        const t_inputrec   *inputrec_;
-        const t_mdatoms    *mdatoms_;
-        t_nrnb             *nrnb_;
-        t_forcerec         *fr_;
-        t_graph            *graph_;
-        t_fcdata           *fcd_;
-        gmx_wallcycle      *wcycle_;
-        gmx_localtop_t     *top_;
-        const gmx_groups_t *groups_;
-        rvec               *force_vir_;
-        Constraints        *constr_;
-        gmx_shellfc_t      *shellfc_;
-        const gmx_mtop_t   *top_global_;
-        PpForceWorkload    *ppForceWorkload_;
+        t_state                  *localState_;
+        ArrayRefWithPadding<RVec> f_;
+        gmx_enerdata_t           *enerd_;
+        real                     *mu_tot_;
+        FILE                     *fplog_;
+        const t_commrec          *cr_;
+        const t_inputrec         *inputrec_;
+        const t_mdatoms          *mdatoms_;
+        t_nrnb                   *nrnb_;
+        t_forcerec               *fr_;
+        t_graph                  *graph_;
+        t_fcdata                 *fcd_;
+        gmx_wallcycle            *wcycle_;
+        gmx_localtop_t           *top_;
+        const gmx_groups_t       *groups_;
+        rvec                     *force_vir_;
+        Constraints              *constr_;
+        gmx_shellfc_t            *shellfc_;
+        const gmx_mtop_t         *top_global_;
+        PpForceWorkload          *ppForceWorkload_;
 };
 }  // namespace gmx
 
