@@ -762,10 +762,6 @@ void Integrator::run()
             {
                 do_rerun();
             }
-            else if (inputrec->userint1 == 99887766)
-            {
-                do_simple_md();
-            }
             else
             {
                 do_md();
