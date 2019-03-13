@@ -158,6 +158,12 @@ void do_constrain_first(FILE *log, gmx::Constraints *constr,
                         const t_inputrec *inputrec, const t_mdatoms *md,
                         t_state *state);
 
+void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
+                        const t_inputrec *ir, const t_mdatoms *md,
+                        gmx::ArrayRef<gmx::RVec> position,
+                        gmx::ArrayRef<gmx::RVec> velocity,
+                        matrix box, real lambda, int natoms);
+
 /* Routine in sim_util.c */
 
 gmx_bool use_GPU(const nonbonded_verlet_t *nbv);

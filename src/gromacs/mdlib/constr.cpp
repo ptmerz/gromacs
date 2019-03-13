@@ -1268,19 +1268,41 @@ ConstrainCoordinates::ConstrainCoordinates(
     // TODO: Include a way to turn initial constraining on / off
     if (constr && (microState->localState()->flags & (1 << estV)))
     {
-        do_constrain_first(fplog, constr, inputrec, mdatoms, microState->localState());
+        real lambda = 0;
+        do_constrain_first(
+                fplog, constr, inputrec, mdatoms,
+                microState->writePosition().paddedArrayRef(), microState->writeVelocity().paddedArrayRef(),
+                microState->localState()->box, lambda, microState->localState()->natoms);
     }
 }
 
 void ConstrainCoordinates::run()
 {
-    auto step        = (*stepAccessor_)();
-    real dvdl_constr = 0;
+    auto   step        = (*stepAccessor_)();
+    real   dvdl_constr = 0;
+    real   lambda      = 0;
 
-    constrain_coordinates(
-            step, &dvdl_constr, microState_->localState(),
-            shake_vir_, upd_, constr_,
-            calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
+    tensor vir_con;
+
+    auto   x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto   v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    auto   box = microState_->localState()->box;
+
+    /* clear out constraints before applying */
+    clear_mat(shake_vir_);
+
+    /* Constrain the coordinates upd->xp */
+    constr_->apply(writeLogThisStep_, writeEnergyThisStep_,
+                   step, 1, 1.0,
+                   x, upd_->xp()->rvec_array(), nullptr,
+                   box,
+                   lambda, &dvdl_constr,
+                   v, calculateVirialThisStep_ ? &vir_con : nullptr, ConstraintVariable::Positions);
+
+    if (calculateVirialThisStep_)
+    {
+        m_add(shake_vir_, vir_con, shake_vir_);
+    }
 }
 
 ElementFunctionTypePtr ConstrainCoordinates::registerSetup()
@@ -1359,11 +1381,35 @@ void ConstrainVelocities::run()
 {
     auto step        = (*stepAccessor_)();
     real dvdl_constr = 0;
+    real lambda      = 0;
 
-    constrain_velocities(
-            step, &dvdl_constr, microState_->localState(),
-            shake_vir_, constr_,
-            calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
+    /*
+     *  Steps (7C, 8C)
+     *  APPLY CONSTRAINTS:
+     *  BLOCK SHAKE
+     */
+    tensor vir_con;
+
+    // unfortunately, we need write access to the positions here (non-const rvec),
+    // although we're constraining velocities
+    auto x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    auto box = microState_->localState()->box;
+
+    /* clear out constraints before applying */
+    clear_mat(shake_vir_);
+
+    /* Constrain the coordinates upd->xp */
+    constr_->apply(writeLogThisStep_, writeEnergyThisStep_,
+                   step, 1, 1.0,
+                   x, v, v, box,
+                   lambda, &dvdl_constr,
+                   nullptr, calculateVirialThisStep_ ? &vir_con : nullptr, ConstraintVariable::Velocities);
+
+    if (calculateVirialThisStep_)
+    {
+        m_add(shake_vir_, vir_con, shake_vir_);
+    }
 }
 
 ElementFunctionTypePtr ConstrainVelocities::registerSetup()

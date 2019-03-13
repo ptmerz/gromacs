@@ -2211,6 +2211,27 @@ void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
                         const t_inputrec *ir, const t_mdatoms *md,
                         t_state *state)
 {
+    auto position = state->x.arrayRefWithPadding().paddedArrayRef();
+    auto velocity = state->v.arrayRefWithPadding().paddedArrayRef();
+    auto box      = state->box;
+    real lambda   = state->lambda[efptBONDED];
+    int  natoms   = state->natoms;
+
+    do_constrain_first(
+            fplog, constr, ir, md,
+            position, velocity,
+            box, lambda, natoms);
+}
+
+void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
+                        const t_inputrec *ir, const t_mdatoms *md,
+                        gmx::ArrayRef<gmx::RVec> position,
+                        gmx::ArrayRef<gmx::RVec> velocity,
+                        matrix box, real lambda, int natoms)
+{
+    rvec           *pos = as_rvec_array(position.data());
+    rvec           *vel = as_rvec_array(velocity.data());
+
     int             i, m, start, end;
     int64_t         step;
     real            dt = ir->delta_t;
@@ -2220,7 +2241,7 @@ void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
     /* We need to allocate one element extra, since we might use
      * (unaligned) 4-wide SIMD loads to access rvec entries.
      */
-    snew(savex, state->natoms + 1);
+    snew(savex, natoms + 1);
 
     start = 0;
     end   = md->homenr;
@@ -2243,9 +2264,9 @@ void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
     /* constrain the current position */
     constr->apply(TRUE, FALSE,
                   step, 0, 1.0,
-                  state->x.rvec_array(), state->x.rvec_array(), nullptr,
-                  state->box,
-                  state->lambda[efptBONDED], &dvdl_dum,
+                  pos, pos, nullptr,
+                  box,
+                  lambda, &dvdl_dum,
                   nullptr, nullptr, gmx::ConstraintVariable::Positions);
     if (EI_VV(ir->eI))
     {
@@ -2253,16 +2274,16 @@ void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
         /* also may be useful if we need the ekin from the halfstep for velocity verlet */
         constr->apply(TRUE, FALSE,
                       step, 0, 1.0,
-                      state->x.rvec_array(), state->v.rvec_array(), state->v.rvec_array(),
-                      state->box,
-                      state->lambda[efptBONDED], &dvdl_dum,
+                      pos, vel, vel,
+                      box,
+                      lambda, &dvdl_dum,
                       nullptr, nullptr, gmx::ConstraintVariable::Velocities);
     }
     /* constrain the inital velocities at t-dt/2 */
     if (EI_STATE_VELOCITY(ir->eI) && ir->eI != eiVV)
     {
-        auto x = makeArrayRef(state->x).subArray(start, end);
-        auto v = makeArrayRef(state->v).subArray(start, end);
+        auto x = position.subArray(start, end);
+        auto v = velocity.subArray(start, end);
         for (i = start; (i < end); i++)
         {
             for (m = 0; (m < DIM); m++)
@@ -2285,10 +2306,10 @@ void do_constrain_first(FILE *fplog, gmx::Constraints *constr,
         dvdl_dum = 0;
         constr->apply(TRUE, FALSE,
                       step, -1, 1.0,
-                      state->x.rvec_array(), savex, nullptr,
-                      state->box,
-                      state->lambda[efptBONDED], &dvdl_dum,
-                      state->v.rvec_array(), nullptr, gmx::ConstraintVariable::Positions);
+                      pos, savex, nullptr,
+                      box,
+                      lambda, &dvdl_dum,
+                      vel, nullptr, gmx::ConstraintVariable::Positions);
 
         for (i = start; i < end; i++)
         {
