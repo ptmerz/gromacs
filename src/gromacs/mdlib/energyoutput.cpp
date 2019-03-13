@@ -1921,7 +1921,7 @@ void EnergyElement::step()
                 isFreeEnergyCalculationStep_, isEnergyCalculationStep_,
                 (*timeAccessor_)(), mdAtoms_->mdatoms()->tmass, enerd_, localState,
                 inputrec_->fepvals, inputrec_->expandedvals,
-                localState->box,  // TODO: was lastbox - might be a problem when box changes!
+                microState_->getBox(),  // TODO: was lastbox - might be a problem when box changes!
                 shake_vir_, force_vir_, total_vir_, pres_,
                 ekind_, mu_tot_, constr_);
     }

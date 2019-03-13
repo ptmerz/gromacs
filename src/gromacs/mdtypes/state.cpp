@@ -293,7 +293,7 @@ MicroState::MicroState(
         int                       nstvout,
         int                       nstfout,
         int                       nstxout_compressed) :
-    natoms_(natoms),
+    totalNAtoms_(natoms),
     nstxout_(nstxout),
     nstvout_(nstvout),
     nstfout_(nstfout),
@@ -363,7 +363,7 @@ void MicroState::write(gmx_mdoutf_t outf)
     }
 
     mdoutf_write_to_trajectory_files(
-            fplog_, cr_, outf, mdof_flags, natoms_,
+            fplog_, cr_, outf, mdof_flags, totalNAtoms_,
             currentStep, currentTime, localStateBackup_, globalState_, observablesHistory, f_);
 }
 
@@ -444,10 +444,13 @@ PaddedVector<RVec>* MicroState::forcePointer()
     return &f_;
 }
 
-/*
-   PaddedVector<gmx::RVec>* MicroState::forces()
-   {
-    return f_;
-   }
- */
+rvec* MicroState::getBox()
+{
+    return localState_->box;
+}
+
+int MicroState::localNumAtoms()
+{
+    return localState_->natoms;
+}
 }

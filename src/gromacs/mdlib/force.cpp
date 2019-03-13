@@ -987,6 +987,7 @@ void ForceElement::run()
     auto            lambda           = ArrayRef<real>();
     gmx_multisim_t *ms               = nullptr;
     gmx_vsite_t    *vsite            = nullptr;
+    history_t      *hist             = nullptr;
 
     int             flags = (
             GMX_FORCE_STATECHANGED |
@@ -1002,7 +1003,7 @@ void ForceElement::run()
 
     auto x          = microState_->writePosition();
     auto forces     = microState_->writeForce();
-    auto localState = microState_->localState();
+    auto box        = microState_->getBox();
 
     clear_mat(force_vir_);
 
@@ -1013,7 +1014,7 @@ void ForceElement::run()
      */
     do_force(fplog_, cr_, ms, inputrec_, awh, enforcedRotation,
              currentStep, nrnb_, wcycle_, top_, groups_,
-             localState->box, x, &localState->hist,
+             box, x, hist,
              forces, force_vir_, mdatoms_, enerd_, fcd_, lambda, graph_,
              fr_, ppForceWorkload_, vsite, mu_tot_, currentTime, ed,
              flags, ddOpenBalanceRegion_, ddCloseBalanceRegion_);

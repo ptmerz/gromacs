@@ -1272,7 +1272,7 @@ ConstrainCoordinates::ConstrainCoordinates(
         do_constrain_first(
                 fplog, constr, inputrec, mdatoms,
                 microState->writePosition().paddedArrayRef(), microState->writeVelocity().paddedArrayRef(),
-                microState->localState()->box, lambda, microState->localState()->natoms);
+                microState->getBox(), lambda, microState->localNumAtoms());
     }
 }
 
@@ -1286,7 +1286,7 @@ void ConstrainCoordinates::run()
 
     auto   x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
     auto   v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
-    auto   box = microState_->localState()->box;
+    auto   box = microState_->getBox();
 
     /* clear out constraints before applying */
     clear_mat(shake_vir_);
@@ -1394,7 +1394,7 @@ void ConstrainVelocities::run()
     // although we're constraining velocities
     auto x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
     auto v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
-    auto box = microState_->localState()->box;
+    auto box = microState_->getBox();
 
     /* clear out constraints before applying */
     clear_mat(shake_vir_);

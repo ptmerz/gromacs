@@ -2188,7 +2188,7 @@ void UpdateLeapfrog::runPartial(int start, int nrend)
     auto          xp  = upd_->xp()->rvec_array();
     auto          v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
     const auto    f   = as_rvec_array(microState_->readForce().unpaddedArrayRef().data());
-    const auto    box = microState_->localState()->box;
+    const auto    box = microState_->getBox();
 
     do_update_md(
             start, nrend, (*stepAccessor_)(), timestep_,
@@ -2240,7 +2240,7 @@ void FinishUpdateElement::run()
     t_nrnb        *nrnb  = nullptr;
     finish_update(
             inputrec_, mdatoms_,
-            microState_->writePosition().paddedArrayRef(), microState_->localState()->box,
+            microState_->writePosition().paddedArrayRef(), microState_->getBox(),
             graph, nrnb, wcycle_, upd_, constr_);
 }
 
@@ -2272,10 +2272,9 @@ void ResetVForVV::setup()
      * revert back to the initial coordinates
      * so that the input is actually the initial step.
      */
-    int  natoms = microState_->localState()->natoms;
-    snew(vbuf_, natoms);
+    snew(vbuf_, microState_->localNumAtoms());
     auto v = as_rvec_array(microState_->readVelocity().paddedArrayRef().data());
-    copy_rvecn(v, vbuf_, 0, natoms);
+    copy_rvecn(v, vbuf_, 0, microState_->localNumAtoms());
     /* should make this better for parallelizing? */
 }
 
@@ -2285,8 +2284,7 @@ void ResetVForVV::run()
     {
         /* if it's the initial step, we performed this first step just to get the constraint virial */
         auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
-        int  natoms = microState_->localState()->natoms;
-        copy_rvecn(vbuf_, v, 0, natoms);
+        copy_rvecn(vbuf_, v, 0, microState_->localNumAtoms());
         sfree(vbuf_);
         firstStep_ = false;
     }

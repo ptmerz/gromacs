@@ -352,13 +352,16 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         ArrayRefWithPadding<RVec> writeForce();
         ArrayRefWithPadding<const RVec> readForce();
 
+        rvec* getBox();
+        int localNumAtoms();
+
         // Access to legacy state
         t_state* localState();
         t_state* globalState();
         PaddedVector<gmx::RVec>* forcePointer();
 
     private:
-        int natoms_;
+        int totalNAtoms_;
         int nstxout_;
         int nstvout_;
         int nstfout_;
