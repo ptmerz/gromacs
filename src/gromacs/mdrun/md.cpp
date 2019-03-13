@@ -1176,7 +1176,7 @@ void gmx::legacy::Integrator::do_md()
         update_sd_second_half(step, &dvdl_constr, ir, mdatoms, state,
                               cr, nrnb, wcycle, &upd, constr, do_log, do_ene);
         finish_update(ir, mdatoms,
-                      state, graph,
+                      state->x, state->box, graph,
                       nrnb, wcycle, &upd, constr);
 
         if (ir->bPull && ir->pull->bSetPbcRefToPrevStepCOM)
@@ -1210,7 +1210,7 @@ void gmx::legacy::Integrator::do_md()
              * physically? I'm thinking they are just errors, but not completely sure.
              * For now, will call without actually constraining, constr=NULL*/
             finish_update(ir, mdatoms,
-                          state, graph,
+                          state->x, state->box, graph,
                           nrnb, wcycle, &upd, nullptr);
         }
         if (EI_VV(ir->eI))

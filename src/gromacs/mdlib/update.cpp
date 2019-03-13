@@ -1600,14 +1600,15 @@ update_sd_second_half(int64_t           step,
     }
 }
 
-void finish_update(const t_inputrec       *inputrec, /* input record and box stuff	*/
-                   const t_mdatoms        *md,
-                   t_state                *state,
-                   const t_graph          *graph,
-                   t_nrnb                 *nrnb,
-                   gmx_wallcycle_t         wcycle,
-                   Update                 *upd,
-                   const gmx::Constraints *constr)
+void finish_update(const t_inputrec        *inputrec, /* input record and box stuff	*/
+                   const t_mdatoms         *md,
+                   gmx::ArrayRef<gmx::RVec> pos,
+                   matrix                   box,
+                   const t_graph           *graph,
+                   t_nrnb                  *nrnb,
+                   gmx_wallcycle_t          wcycle,
+                   Update                  *upd,
+                   const gmx::Constraints  *constr)
 {
     int homenr = md->homenr;
 
@@ -1641,7 +1642,7 @@ void finish_update(const t_inputrec       *inputrec, /* input record and box stu
             if (partialFreezeAndConstraints)
             {
                 auto xp = makeArrayRef(*upd->xp()).subArray(0, homenr);
-                auto x  = makeConstArrayRef(state->x).subArray(0, homenr);
+                auto x  = makeConstArrayRef(pos).subArray(0, homenr);
                 for (int i = 0; i < homenr; i++)
                 {
                     int g = md->cFREEZE[i];
@@ -1659,8 +1660,8 @@ void finish_update(const t_inputrec       *inputrec, /* input record and box stu
 
         if (graph && (graph->nnodes > 0))
         {
-            unshift_x(graph, state->box, state->x.rvec_array(), upd->xp()->rvec_array());
-            if (TRICLINIC(state->box))
+            unshift_x(graph, box, as_rvec_array(pos.data()), upd->xp()->rvec_array());
+            if (TRICLINIC(box))
             {
                 inc_nrnb(nrnb, eNR_SHIFTX, 2*graph->nnodes);
             }
@@ -1672,7 +1673,7 @@ void finish_update(const t_inputrec       *inputrec, /* input record and box stu
         else
         {
             auto           xp = makeConstArrayRef(*upd->xp()).subArray(0, homenr);
-            auto           x  = makeArrayRef(state->x).subArray(0, homenr);
+            auto           x  = pos.subArray(0, homenr);
 #ifndef __clang_analyzer__
             int gmx_unused nth = gmx_omp_nthreads_get(emntUpdate);
 #endif
@@ -2238,7 +2239,8 @@ void FinishUpdateElement::run()
     const t_graph *graph = nullptr;
     t_nrnb        *nrnb  = nullptr;
     finish_update(
-            inputrec_, mdatoms_, microState_->localState(),
+            inputrec_, mdatoms_,
+            microState_->writePosition().paddedArrayRef(), microState_->localState()->box,
             graph, nrnb, wcycle_, upd_, constr_);
 }
 
