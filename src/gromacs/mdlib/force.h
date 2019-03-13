@@ -72,6 +72,7 @@ namespace gmx
 class Awh;
 class ForceWithVirial;
 class MDLogger;
+class MicroState;
 }
 
 void init_enerdata(int ngener, int n_lambda, gmx_enerdata_t *enerd);
@@ -215,26 +216,25 @@ class ForceElement :
     public:
         //! Constructor
         ForceElement(
-            bool                      isDynamicBox,
-            bool                      isDomDec,
-            StepAccessorPtr           stepAccessor,
-            TimeAccessorPtr           timeAccessor,
-            t_state                  *localState,
-            ArrayRefWithPadding<RVec> f,
-            gmx_enerdata_t           *enerd,
-            tensor                    force_vir,
-            rvec                      mu_tot,
-            FILE                     *fplog,
-            const t_commrec          *cr,
-            const t_inputrec         *inputrec,
-            const t_mdatoms          *mdatoms,
-            t_nrnb                   *nrnb,
-            t_forcerec               *fr,
-            t_fcdata                 *fcd,
-            gmx_wallcycle            *wcycle,
-            gmx_localtop_t           *top,
-            const gmx_groups_t       *groups,
-            PpForceWorkload          *ppForceWorkload);
+            bool                         isDynamicBox,
+            bool                         isDomDec,
+            StepAccessorPtr              stepAccessor,
+            TimeAccessorPtr              timeAccessor,
+            std::shared_ptr<MicroState> &microState,
+            gmx_enerdata_t              *enerd,
+            tensor                       force_vir,
+            rvec                         mu_tot,
+            FILE                        *fplog,
+            const t_commrec             *cr,
+            const t_inputrec            *inputrec,
+            const t_mdatoms             *mdatoms,
+            t_nrnb                      *nrnb,
+            t_forcerec                  *fr,
+            t_fcdata                    *fcd,
+            gmx_wallcycle               *wcycle,
+            gmx_localtop_t              *top,
+            const gmx_groups_t          *groups,
+            PpForceWorkload             *ppForceWorkload);
 
         //! IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -260,14 +260,14 @@ class ForceElement :
         const DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion_;
         const DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion_;
 
-        StepAccessorPtr stepAccessor_;
-        TimeAccessorPtr timeAccessor_;
+        StepAccessorPtr                                 stepAccessor_;
+        TimeAccessorPtr                                 timeAccessor_;
+
+        std::shared_ptr<MicroState>                     microState_;
 
         void run();
 
         // TODO: Rethink access to these
-        t_state                  *localState_;
-        ArrayRefWithPadding<RVec> f_;
         gmx_enerdata_t           *enerd_;
         real                     *mu_tot_;
         FILE                     *fplog_;

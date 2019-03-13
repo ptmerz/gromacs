@@ -62,6 +62,7 @@ namespace gmx
 {
 class Constraints;
 class MDLogger;
+class MicroState;
 class SimulationSignaller;
 }
 
@@ -143,28 +144,28 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
 {
     public:
         ComputeGlobalsElement(
-            StepAccessorPtr       stepAccessor,
-            t_state              *localState,
-            gmx_enerdata_t       *enerd,
-            tensor                force_vir,
-            tensor                shake_vir,
-            tensor                total_vir,
-            tensor                pres,
-            rvec                  mu_tot,
-            FILE                 *fplog,
-            const MDLogger       &mdlog,
-            t_commrec            *cr,
-            t_inputrec           *inputrec,
-            t_mdatoms            *mdatoms,
-            t_nrnb               *nrnb,
-            t_forcerec           *fr,
-            gmx_wallcycle_t       wcycle,
-            gmx_mtop_t           *global_top,
-            gmx_localtop_t       *top,
-            gmx_ekindata_t       *ekind,
-            Constraints          *constr,
-            t_vcm                *vcm,
-            int                   globalCommunicationInterval);
+            StepAccessorPtr              stepAccessor,
+            std::shared_ptr<MicroState> &microState,
+            gmx_enerdata_t              *enerd,
+            tensor                       force_vir,
+            tensor                       shake_vir,
+            tensor                       total_vir,
+            tensor                       pres,
+            rvec                         mu_tot,
+            FILE                        *fplog,
+            const MDLogger              &mdlog,
+            t_commrec                   *cr,
+            t_inputrec                  *inputrec,
+            t_mdatoms                   *mdatoms,
+            t_nrnb                      *nrnb,
+            t_forcerec                  *fr,
+            gmx_wallcycle_t              wcycle,
+            gmx_mtop_t                  *global_top,
+            gmx_localtop_t              *top,
+            gmx_ekindata_t              *ekind,
+            Constraints                 *constr,
+            t_vcm                       *vcm,
+            int                          globalCommunicationInterval);
         ~ComputeGlobalsElement() override;
 
         ElementFunctionTypePtr registerSetup() override;
@@ -199,13 +200,14 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
            code. So we do that alongside the first global energy reduction
            after a new DD is made. These variables handle whether the
            check happens, and the result it returns. */
-        int                    totalNumberOfBondedInteractions_;
-        bool                   shouldCheckNumberOfBondedInteractions_;
+        int                         totalNumberOfBondedInteractions_;
+        bool                        shouldCheckNumberOfBondedInteractions_;
 
-        gmx_global_stat       *gstat_;
-        AccumulateGlobals      accumulateGlobals_;
+        gmx_global_stat            *gstat_;
+        AccumulateGlobals           accumulateGlobals_;
 
-        StepAccessorPtr        stepAccessor_;
+        StepAccessorPtr             stepAccessor_;
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
         //! Handles logging.
@@ -220,8 +222,6 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
         const gmx_mtop_t *top_global_;
         //! Atom parameters for this domain.
         t_mdatoms        *mdatoms_;
-        //! The local state
-        t_state          *localState_;
         //! Energy data structure
         gmx_enerdata_t   *enerd_;
         //! Virials

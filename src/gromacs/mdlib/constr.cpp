@@ -1250,12 +1250,15 @@ bool inter_charge_group_settles(const gmx_mtop_t &mtop)
 }
 
 ConstrainCoordinates::ConstrainCoordinates(
-        StepAccessorPtr stepAccessor, const t_mdatoms *mdatoms,
-        t_state *localState, Update *upd,
+        StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+        const t_mdatoms *mdatoms, Update *upd,
         tensor shake_vir, Constraints *constr,
         FILE *fplog, const t_inputrec *inputrec) :
     stepAccessor_(std::move(stepAccessor)),
-    localState_(localState),
+    calculateVirialThisStep_(false),
+    writeLogThisStep_(false),
+    writeEnergyThisStep_(false),
+    microState_(microState),
     upd_(upd),
     shake_vir_(shake_vir),
     constr_(constr)
@@ -1263,9 +1266,9 @@ ConstrainCoordinates::ConstrainCoordinates(
     GMX_ASSERT(stepAccessor_, "ConstrainCoordinates constructor: stepAccessor can not be nullptr");
 
     // TODO: Include a way to turn initial constraining on / off
-    if (constr && (localState_->flags & (1 << estV)))
+    if (constr && (microState->localState()->flags & (1 << estV)))
     {
-        do_constrain_first(fplog, constr, inputrec, mdatoms, localState);
+        do_constrain_first(fplog, constr, inputrec, mdatoms, microState->localState());
     }
 }
 
@@ -1275,7 +1278,7 @@ void ConstrainCoordinates::run()
     real dvdl_constr = 0;
 
     constrain_coordinates(
-            step, &dvdl_constr, localState_,
+            step, &dvdl_constr, microState_->localState(),
             shake_vir_, upd_, constr_,
             calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
 }
@@ -1339,9 +1342,13 @@ LoggingSignallerCallbackPtr ConstrainCoordinates::getLoggingCallback()
 }
 
 ConstrainVelocities::ConstrainVelocities(
-        StepAccessorPtr stepAccessor, t_state *localState, tensor shake_vir, Constraints *constr) :
+        StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+        tensor shake_vir, Constraints *constr) :
     stepAccessor_(std::move(stepAccessor)),
-    localState_(localState),
+    calculateVirialThisStep_(false),
+    writeLogThisStep_(false),
+    writeEnergyThisStep_(false),
+    microState_(microState),
     shake_vir_(shake_vir),
     constr_(constr)
 {
@@ -1354,7 +1361,7 @@ void ConstrainVelocities::run()
     real dvdl_constr = 0;
 
     constrain_velocities(
-            step, &dvdl_constr, localState_,
+            step, &dvdl_constr, microState_->localState(),
             shake_vir_, constr_,
             calculateVirialThisStep_, writeLogThisStep_, writeEnergyThisStep_);
 }

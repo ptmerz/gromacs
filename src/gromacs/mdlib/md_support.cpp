@@ -640,28 +640,28 @@ void set_state_entries(t_state *state, const t_inputrec *ir)
 namespace gmx
 {
 ComputeGlobalsElement::ComputeGlobalsElement(
-        StepAccessorPtr stepAccessor,
-        t_state        *localState,
-        gmx_enerdata_t *enerd,
-        tensor          force_vir,
-        tensor          shake_vir,
-        tensor          total_vir,
-        tensor          pres,
-        rvec            mu_tot,
-        FILE           *fplog,
-        const MDLogger &mdlog,
-        t_commrec      *cr,
-        t_inputrec     *inputrec,
-        t_mdatoms      *mdatoms,
-        t_nrnb         *nrnb,
-        t_forcerec     *fr,
-        gmx_wallcycle_t wcycle,
-        gmx_mtop_t     *global_top,
-        gmx_localtop_t *top,
-        gmx_ekindata_t *ekind,
-        Constraints    *constr,
-        t_vcm          *vcm,
-        int             globalCommunicationInterval) :
+        StepAccessorPtr              stepAccessor,
+        std::shared_ptr<MicroState> &microState,
+        gmx_enerdata_t              *enerd,
+        tensor                       force_vir,
+        tensor                       shake_vir,
+        tensor                       total_vir,
+        tensor                       pres,
+        rvec                         mu_tot,
+        FILE                        *fplog,
+        const MDLogger              &mdlog,
+        t_commrec                   *cr,
+        t_inputrec                  *inputrec,
+        t_mdatoms                   *mdatoms,
+        t_nrnb                      *nrnb,
+        t_forcerec                  *fr,
+        gmx_wallcycle_t              wcycle,
+        gmx_mtop_t                  *global_top,
+        gmx_localtop_t              *top,
+        gmx_ekindata_t              *ekind,
+        Constraints                 *constr,
+        t_vcm                       *vcm,
+        int                          globalCommunicationInterval) :
     doStopCM_(inputrec->comm_mode != ecmNO),
     nstcomm_(inputrec->nstcomm),
     needGlobalReduction_(false),
@@ -671,13 +671,13 @@ ComputeGlobalsElement::ComputeGlobalsElement(
     totalNumberOfBondedInteractions_(0),
     shouldCheckNumberOfBondedInteractions_(false),
     stepAccessor_(std::move(stepAccessor)),
+    microState_(microState),
     fplog_(fplog),
     mdlog_(mdlog),
     cr_(cr),
     inputrec_(inputrec),
     top_global_(global_top),
     mdatoms_(mdatoms),
-    localState_(localState),
     enerd_(enerd),
     force_vir_(force_vir),
     shake_vir_(shake_vir),
@@ -734,6 +734,8 @@ void ComputeGlobalsElement::setup()
 
     bool bSumEkinhOld = false;
 
+    auto localState = microState_->localState();
+
     /* To minimize communication, compute_globals computes the COM velocity
      * and the kinetic energy for the velocities without COM motion removed.
      * Thus to get the kinetic energy without the COM contribution, we need
@@ -747,15 +749,15 @@ void ComputeGlobalsElement::setup()
             cglo_flags_iteration |= CGLO_STOPCM;
             cglo_flags_iteration &= ~CGLO_TEMPERATURE;
         }
-        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState_, mdatoms_, nrnb_, vcm_,
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState, mdatoms_, nrnb_, vcm_,
                         nullptr, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
-                        constr_, &nullSignaller, localState_->box,
+                        constr_, &nullSignaller, localState->box,
                         &accumulateGlobals_,
                         &totalNumberOfBondedInteractions_, &bSumEkinhOld, cglo_flags_iteration
                         | (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0));
     }
     checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
-                                    top_global_, top_, localState_,
+                                    top_global_, top_, localState,
                                     &shouldCheckNumberOfBondedInteractions_);
 }
 
@@ -792,6 +794,7 @@ void ComputeGlobalsElement::run()
         SimulationSignaller signaller(&signals_, cr_, ms, doInterSimSignal, doIntraSimSignal);
 
         bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
+        auto                localState   = microState_->localState();
 
         int                 flags =
             CGLO_TEMPERATURE |     // TODO: This used not to be done every time when doing vv - why?
@@ -813,17 +816,17 @@ void ComputeGlobalsElement::run()
             flags |= CGLO_STOPCM;
         }
 
-        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState_, mdatoms_, nrnb_, vcm_,
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState, mdatoms_, nrnb_, vcm_,
                         wcycle_, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
                         constr_, &signaller,
-                        localState_->box,  // TODO: was lastbox - might be a problem when box changes!
+                        localState->box,  // TODO: was lastbox - might be a problem when box changes!
                         &accumulateGlobals_,
                         &totalNumberOfBondedInteractions_, &bSumEkinhOld,
                         flags |
                         (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
                         );
         checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
-                                        top_global_, top_, localState_,
+                                        top_global_, top_, localState,
                                         &shouldCheckNumberOfBondedInteractions_);
 
         needGlobalReduction_ = false;

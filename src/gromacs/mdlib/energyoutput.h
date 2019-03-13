@@ -61,6 +61,7 @@ namespace gmx
 class Awh;
 class Constraints;
 class MDAtoms;
+class MicroState;
 }
 
 extern const char *egrp_nm[egNR+1];
@@ -250,23 +251,23 @@ class EnergyElement :
 {
     public:
         EnergyElement(
-            StepAccessorPtr stepAccessor,
-            TimeAccessorPtr timeAccessor,
-            gmx_mtop_t     *mtop,
-            t_inputrec     *ir,
-            MDAtoms        *mdAtoms,
-            t_state        *localState,
-            gmx_enerdata_t *enerd,
-            tensor          force_vir,
-            tensor          shake_vir,
-            tensor          total_vir,
-            tensor          pres,
-            gmx_ekindata_t *ekind,
-            Constraints    *constr,
-            rvec            mu_tot,
-            FILE           *fplog,
-            t_fcdata       *fcd,
-            bool            isMaster);
+            StepAccessorPtr              stepAccessor,
+            TimeAccessorPtr              timeAccessor,
+            std::shared_ptr<MicroState> &microState,
+            gmx_mtop_t                  *mtop,
+            t_inputrec                  *ir,
+            MDAtoms                     *mdAtoms,
+            gmx_enerdata_t              *enerd,
+            tensor                       force_vir,
+            tensor                       shake_vir,
+            tensor                       total_vir,
+            tensor                       pres,
+            gmx_ekindata_t              *ekind,
+            Constraints                 *constr,
+            rvec                         mu_tot,
+            FILE                        *fplog,
+            t_fcdata                    *fcd,
+            bool                         isMaster);
 
         // IIntegratorElement
         ElementFunctionTypePtr registerSetup() override;
@@ -290,17 +291,19 @@ class EnergyElement :
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        EnergyOutput    energyOutput_;
+        EnergyOutput                energyOutput_;
 
-        const bool      isMaster_;
-        bool            isEnergyCalculationStep_;
-        bool            writeEnergy_;
-        bool            isFreeEnergyCalculationStep_;
-        bool            writeLog_;
-        bool            isLastStep_;
+        const bool                  isMaster_;
+        bool                        isEnergyCalculationStep_;
+        bool                        writeEnergy_;
+        bool                        isFreeEnergyCalculationStep_;
+        bool                        writeLog_;
+        bool                        isLastStep_;
 
-        StepAccessorPtr stepAccessor_;
-        TimeAccessorPtr timeAccessor_;
+        StepAccessorPtr             stepAccessor_;
+        TimeAccessorPtr             timeAccessor_;
+
+        std::shared_ptr<MicroState> microState_;
 
         void step();
         void setup(gmx_mdoutf *outf);
@@ -312,8 +315,6 @@ class EnergyElement :
         const gmx_mtop_t *top_global_;
         //! Atom parameters for this domain.
         MDAtoms          *mdAtoms_;
-        //! The local state
-        t_state          *localState_;
         //! Energy data structure
         gmx_enerdata_t   *enerd_;
         //! Virials

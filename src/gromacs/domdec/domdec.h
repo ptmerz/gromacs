@@ -93,6 +93,7 @@ namespace gmx
 class Constraints;
 class MDAtoms;
 class MDLogger;
+class MicroState;
 class LocalAtomSetManager;
 class Update;
 } // namespace
@@ -403,22 +404,20 @@ class DomDecElement :
             StepAccessorPtr                       stepAccessor,
             bool                                  isVerbose,
             int                                   verbosePrintInterval,
+            std::shared_ptr<MicroState>          &microState,
             FILE                                 *fplog,
             t_commrec                            *cr,
             const MDLogger                       &mdlog,
             Constraints                          *constr,
             t_inputrec                           *inputrec,
             gmx_mtop_t                           *top_global,
-            t_state                              *state_global,
             MDAtoms                              *mdAtoms,
             t_nrnb                               *nrnb,
             gmx_wallcycle                        *wcycle,
             t_forcerec                           *fr,
-            t_state                              *localState,
             gmx_localtop_t                       *localTopology,
             gmx_shellfc_t                        *shellfc,
             Update                               *upd,
-            PaddedVector<RVec>                   *f,
             CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback);
 
         ElementFunctionTypePtr registerSetup() override;
@@ -445,7 +444,8 @@ class DomDecElement :
         void init();
         void run();
 
-        StepAccessorPtr stepAccessor_;
+        StepAccessorPtr             stepAccessor_;
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
         //! Handles logging.
@@ -460,8 +460,6 @@ class DomDecElement :
         t_inputrec                         *inputrec_;
         //! Full system topology.
         gmx_mtop_t                         *top_global_;
-        //! Full simulation state (only non-nullptr on master rank).
-        t_state                            *state_global_;
         //! Atom parameters for this domain.
         MDAtoms                            *mdAtoms_;
         //! Manages flop accounting.
@@ -471,16 +469,12 @@ class DomDecElement :
         //! Parameters for force calculations.
         t_forcerec                         *fr_;
 
-        //! The local state
-        t_state                            *localState_;
         //! The local topology
         gmx_localtop_t                     *localTopology_;
         //! shellfc
         gmx_shellfc_t                      *shellfc_;
         //! Update
         Update                             *upd_;
-        //! The force vector
-        PaddedVector<gmx::RVec>            *f_;
 };
 }
 

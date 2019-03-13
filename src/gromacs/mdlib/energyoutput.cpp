@@ -1842,23 +1842,23 @@ LoggingSignallerCallbackPtr EnergySignaller::getLoggingCallback()
 }
 
 EnergyElement::EnergyElement(
-        StepAccessorPtr stepAccessor,
-        TimeAccessorPtr timeAccessor,
-        gmx_mtop_t     *mtop,
-        t_inputrec     *ir,
-        MDAtoms        *mdAtoms,
-        t_state        *localState,
-        gmx_enerdata_t *enerd,
-        tensor          force_vir,
-        tensor          shake_vir,
-        tensor          total_vir,
-        tensor          pres,
-        gmx_ekindata_t *ekind,
-        Constraints    *constr,
-        rvec            mu_tot,
-        FILE           *fplog,
-        t_fcdata       *fcd,
-        bool            isMaster) :
+        StepAccessorPtr              stepAccessor,
+        TimeAccessorPtr              timeAccessor,
+        std::shared_ptr<MicroState> &microState,
+        gmx_mtop_t                  *mtop,
+        t_inputrec                  *ir,
+        MDAtoms                     *mdAtoms,
+        gmx_enerdata_t              *enerd,
+        tensor                       force_vir,
+        tensor                       shake_vir,
+        tensor                       total_vir,
+        tensor                       pres,
+        gmx_ekindata_t              *ekind,
+        Constraints                 *constr,
+        rvec                         mu_tot,
+        FILE                        *fplog,
+        t_fcdata                    *fcd,
+        bool                         isMaster) :
     isMaster_(isMaster),
     isEnergyCalculationStep_(false),
     writeEnergy_(false),
@@ -1867,10 +1867,10 @@ EnergyElement::EnergyElement(
     isLastStep_(false),
     stepAccessor_(std::move(stepAccessor)),
     timeAccessor_(std::move(timeAccessor)),
+    microState_(microState),
     inputrec_(ir),
     top_global_(mtop),
     mdAtoms_(mdAtoms),
-    localState_(localState),
     enerd_(enerd),
     force_vir_(force_vir),
     shake_vir_(shake_vir),
@@ -1915,12 +1915,13 @@ void EnergyElement::step()
 {
     if (isEnergyCalculationStep_ || writeEnergy_)
     {
+        auto localState = microState_->localState();
         enerd_->term[F_ETOT] = enerd_->term[F_EPOT] + enerd_->term[F_EKIN];
         energyOutput_.addDataAtEnergyStep(
                 isFreeEnergyCalculationStep_, isEnergyCalculationStep_,
-                (*timeAccessor_)(), mdAtoms_->mdatoms()->tmass, enerd_, localState_,
+                (*timeAccessor_)(), mdAtoms_->mdatoms()->tmass, enerd_, localState,
                 inputrec_->fepvals, inputrec_->expandedvals,
-                localState_->box,  // TODO: was lastbox - might be a problem when box changes!
+                localState->box,  // TODO: was lastbox - might be a problem when box changes!
                 shake_vir_, force_vir_, total_vir_, pres_,
                 ekind_, mu_tot_, constr_);
     }

@@ -3114,22 +3114,20 @@ DomDecElement::DomDecElement(
         StepAccessorPtr                       stepAccessor,
         bool                                  isVerbose,
         int                                   verbosePrintInterval,
+        std::shared_ptr<MicroState>          &microState,
         FILE                                 *fplog,
         t_commrec                            *cr,
         const MDLogger                       &mdlog,
         Constraints                          *constr,
         t_inputrec                           *inputrec,
         gmx_mtop_t                           *top_global,
-        t_state                              *state_global,
         MDAtoms                              *mdAtoms,
         t_nrnb                               *nrnb,
         gmx_wallcycle                        *wcycle,
         t_forcerec                           *fr,
-        t_state                              *localState,
         gmx_localtop_t                       *localTopology,
         gmx_shellfc_t                        *shellfc,
         Update                               *upd,
-        PaddedVector<RVec>                   *f,
         CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback) :
     isNSStep_(false),
     isVerbose_(isVerbose),
@@ -3139,22 +3137,20 @@ DomDecElement::DomDecElement(
     nstglobalcomm_(nstglobalcomm),
     checkNOfBondedInteractionsCallback_(std::move(checkNOfBondedInteractionsCallback)),
     stepAccessor_(std::move(stepAccessor)),
+    microState_(microState),
     fplog_(fplog),
     cr_(cr),
     mdlog_(mdlog),
     constr_(constr),
     inputrec_(inputrec),
     top_global_(top_global),
-    state_global_(state_global),
     mdAtoms_(mdAtoms),
     nrnb_(nrnb),
     wcycle_(wcycle),
     fr_(fr),
-    localState_(localState),
     localTopology_(localTopology),
     shellfc_(shellfc),
-    upd_(upd),
-    f_(f)
+    upd_(upd)
 {
     init();
 }
@@ -3163,8 +3159,12 @@ void gmx::DomDecElement::init()
 {
     if (DOMAINDECOMP(cr_))
     {
+        auto localState   = microState_->localState();
+        auto globalState  = microState_->globalState();
+        auto forcePointer = microState_->forcePointer();
+
         dd_init_local_top(*top_global_, localTopology_);
-        dd_init_local_state(cr_->dd, state_global_, localState_);
+        dd_init_local_state(cr_->dd, globalState, localState);
 
         // constant choices for this call to dd_partition_system
         const bool     verbose       = false;
@@ -3177,12 +3177,12 @@ void gmx::DomDecElement::init()
 
         /* Distribute the charge groups over the nodes from the master node */
         dd_partition_system(fplog_, mdlog_, inputrec_->init_step, cr_, isMasterState, nstglobalcomm,
-                            state_global_, *top_global_, inputrec_,
-                            localState_, f_, mdAtoms_, localTopology_, fr_,
+                            globalState, *top_global_, inputrec_,
+                            localState, forcePointer, mdAtoms_, localTopology_, fr_,
                             vsite, constr_,
                             nrnb_, wcycle, verbose);
         (*checkNOfBondedInteractionsCallback_)();
-        upd_->setNumAtoms(localState_->natoms);
+        upd_->setNumAtoms(localState->natoms);
     }
     else
     {
@@ -3190,14 +3190,18 @@ void gmx::DomDecElement::init()
         gmx_vsite_t *vsite = nullptr;
         t_graph     *graph = nullptr;
 
-        state_change_natoms(state_global_, state_global_->natoms);
-        f_->resizeWithPadding(state_global_->natoms);
+        auto         localState   = microState_->localState();
+        auto         globalState  = microState_->globalState();
+        auto         forcePointer = microState_->forcePointer();
+
+        state_change_natoms(globalState, globalState->natoms);
+        forcePointer->resizeWithPadding(globalState->natoms);
 
         /* Generate and initialize new topology */
         mdAlgorithmsSetupAtomData(cr_, inputrec_, *top_global_, localTopology_, fr_,
                                   &graph, mdAtoms_, constr_, vsite, shellfc_);
 
-        upd_->setNumAtoms(localState_->natoms);
+        upd_->setNumAtoms(localState->natoms);
     }
 }
 
@@ -3216,18 +3220,22 @@ void gmx::DomDecElement::run()
     auto         step = (*stepAccessor_)();
 
     bool         doVerbose = isVerbose_ &&
-        (step % verbosePrintInterval_ == 0 || isFirstStep_ || isLastStep_);;
+        (step % verbosePrintInterval_ == 0 || isFirstStep_ || isLastStep_);
+
+    auto localState   = microState_->localState();
+    auto globalState  = microState_->globalState();
+    auto forcePointer = microState_->forcePointer();
 
     /* Repartition the domain decomposition */
     dd_partition_system(fplog_, mdlog_, step, cr_,
                         isMasterState, nstglobalcomm_,
-                        state_global_, *top_global_, inputrec_,
-                        localState_, f_, mdAtoms_, localTopology_, fr_,
+                        globalState, *top_global_, inputrec_,
+                        localState, forcePointer, mdAtoms_, localTopology_, fr_,
                         vsite, constr_,
                         nrnb_, wcycle_,
                         doVerbose);  // was: do_verbose && !bPMETunePrinting
     (*checkNOfBondedInteractionsCallback_)();
-    upd_->setNumAtoms(localState_->natoms);
+    upd_->setNumAtoms(localState->natoms);
     isNSStep_    = false;
     isFirstStep_ = false;
 }

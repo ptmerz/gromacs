@@ -74,6 +74,7 @@ class t_state;
 
 namespace gmx
 {
+class MicroState;
 class Update;
 
 //! Describes supported flavours of constrained updates.
@@ -294,8 +295,8 @@ class ConstrainCoordinates :
 {
     public:
         ConstrainCoordinates(
-            StepAccessorPtr stepAccessor, const t_mdatoms *mdatoms,
-            t_state *localState, Update *upd,
+            StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+            const t_mdatoms *mdatoms, Update *upd,
             tensor shake_vir, Constraints *constr,
             FILE *fplog, const t_inputrec *inputrec);
 
@@ -312,15 +313,16 @@ class ConstrainCoordinates :
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        StepAccessorPtr stepAccessor_;
+        StepAccessorPtr             stepAccessor_;
 
-        bool            calculateVirialThisStep_;
-        bool            writeLogThisStep_;
-        bool            writeEnergyThisStep_;
+        bool                        calculateVirialThisStep_;
+        bool                        writeLogThisStep_;
+        bool                        writeEnergyThisStep_;
+
+        std::shared_ptr<MicroState> microState_;
 
 
         // TODO: Rethink access to these
-        t_state     *localState_;
         Update      *upd_;
         rvec        *shake_vir_;
         Constraints *constr_;
@@ -334,7 +336,8 @@ class ConstrainVelocities :
 {
     public:
         ConstrainVelocities(
-            StepAccessorPtr stepAccessor, t_state *localState, tensor shake_vir, Constraints *constr);
+            StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+            tensor shake_vir, Constraints *constr);
 
         // IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -349,15 +352,15 @@ class ConstrainVelocities :
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        StepAccessorPtr stepAccessor_;
+        StepAccessorPtr             stepAccessor_;
 
-        bool            calculateVirialThisStep_;
-        bool            writeLogThisStep_;
-        bool            writeEnergyThisStep_;
+        bool                        calculateVirialThisStep_;
+        bool                        writeLogThisStep_;
+        bool                        writeEnergyThisStep_;
 
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
-        t_state     *localState_;
         rvec        *shake_vir_;
         Constraints *constr_;
 

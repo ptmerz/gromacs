@@ -134,16 +134,12 @@ class SimpleIntegrator : public Integrator
             t_inputrec              *inputrec,
             gmx_mtop_t              *top_global,
             t_nrnb                  *nrnb,
-            t_state                 *state_global,
             Constraints             *constr,
             gmx_wallcycle           *wcycle,
             gmx_walltime_accounting *walltime_accounting,
             StepAccessorPtr          stepAccessor);
 
     public:
-        //! The local state
-        std::unique_ptr<t_state>        localStateInstance_;
-        t_state                        *localState_;
         //! The local topology
         gmx_localtop_t                 *localTopology_;
         //! Shell / flexible constraints
@@ -152,8 +148,6 @@ class SimpleIntegrator : public Integrator
         bool                            do_verbose_;
         //! Update
         Update                         *upd_;
-        //! The force vector
-        PaddedVector<gmx::RVec>         f_;
         //! Energy data structure
         gmx_enerdata_t                 *enerd_;
         //! Total dipole moment

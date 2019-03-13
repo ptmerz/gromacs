@@ -928,26 +928,25 @@ ElementFunctionTypePtr NeighborSearchSignaller::registerTeardown()
 }
 
 ForceElement::ForceElement(
-        bool                      isDynamicBox,
-        bool                      isDomDec,
-        StepAccessorPtr           stepAccessor,
-        TimeAccessorPtr           timeAccessor,
-        t_state                  *localState,
-        ArrayRefWithPadding<RVec> f,
-        gmx_enerdata_t           *enerd,
-        tensor                    force_vir,
-        rvec                      mu_tot,
-        FILE                     *fplog,
-        const t_commrec          *cr,
-        const t_inputrec         *inputrec,
-        const t_mdatoms          *mdatoms,
-        t_nrnb                   *nrnb,
-        t_forcerec               *fr,
-        t_fcdata                 *fcd,
-        gmx_wallcycle_t           wcycle,
-        gmx_localtop_t           *top,
-        const gmx_groups_t       *groups,
-        PpForceWorkload          *ppForceWorkload) :
+        bool                         isDynamicBox,
+        bool                         isDomDec,
+        StepAccessorPtr              stepAccessor,
+        TimeAccessorPtr              timeAccessor,
+        std::shared_ptr<MicroState> &microState,
+        gmx_enerdata_t              *enerd,
+        tensor                       force_vir,
+        rvec                         mu_tot,
+        FILE                        *fplog,
+        const t_commrec             *cr,
+        const t_inputrec            *inputrec,
+        const t_mdatoms             *mdatoms,
+        t_nrnb                      *nrnb,
+        t_forcerec                  *fr,
+        t_fcdata                    *fcd,
+        gmx_wallcycle_t              wcycle,
+        gmx_localtop_t              *top,
+        const gmx_groups_t          *groups,
+        PpForceWorkload             *ppForceWorkload) :
     isDynamicBox_(isDynamicBox),
     doNeighborSearch_(false),
     calculateVirial_(false),
@@ -961,8 +960,7 @@ ForceElement::ForceElement(
                           DdCloseBalanceRegionAfterForceComputation::no),
     stepAccessor_(std::move(stepAccessor)),
     timeAccessor_(std::move(timeAccessor)),
-    localState_(localState),
-    f_(std::move(f)),
+    microState_(microState),
     enerd_(enerd),
     mu_tot_(mu_tot),
     fplog_(fplog),
@@ -1002,6 +1000,10 @@ void ForceElement::run()
     auto currentStep = (*stepAccessor_)();
     auto currentTime = (*timeAccessor_)();
 
+    auto x          = microState_->writePosition();
+    auto forces     = microState_->writeForce();
+    auto localState = microState_->localState();
+
     clear_mat(force_vir_);
 
     /* The coordinates (x) are shifted (to get whole molecules)
@@ -1011,8 +1013,8 @@ void ForceElement::run()
      */
     do_force(fplog_, cr_, ms, inputrec_, awh, enforcedRotation,
              currentStep, nrnb_, wcycle_, top_, groups_,
-             localState_->box, localState_->x.arrayRefWithPadding(), &localState_->hist,
-             f_, force_vir_, mdatoms_, enerd_, fcd_, lambda, graph_,
+             localState->box, x, &localState->hist,
+             forces, force_vir_, mdatoms_, enerd_, fcd_, lambda, graph_,
              fr_, ppForceWorkload_, vsite, mu_tot_, currentTime, ed,
              flags, ddOpenBalanceRegion_, ddCloseBalanceRegion_);
 

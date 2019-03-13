@@ -62,6 +62,7 @@ class t_state;
 namespace gmx
 {
 class Constraints;
+class MicroState;
 }
 
 /* Initialization function, also predicts the initial shell postions.
@@ -121,30 +122,29 @@ class ShellFCElement :
     public:
         //! Constructor
         ShellFCElement(
-            bool                      isDynamicBox,
-            bool                      isDomDec,
-            bool                      isVerbose,
-            StepAccessorPtr           stepAccessor,
-            TimeAccessorPtr           timeAccessor,
-            t_state                  *localState,
-            ArrayRefWithPadding<RVec> f,
-            gmx_enerdata_t           *enerd,
-            tensor                    force_vir,
-            rvec                      mu_tot,
-            FILE                     *fplog,
-            const t_commrec          *cr,
-            const t_inputrec         *inputrec,
-            const t_mdatoms          *mdatoms,
-            t_nrnb                   *nrnb,
-            t_forcerec               *fr,
-            t_fcdata                 *fcd,
-            gmx_wallcycle            *wcycle,
-            gmx_localtop_t           *top,
-            const gmx_groups_t       *groups,
-            Constraints              *constr,
-            gmx_shellfc_t            *shellfc,
-            const gmx_mtop_t         *top_global,
-            PpForceWorkload          *ppForceWorkload);
+            bool                         isDynamicBox,
+            bool                         isDomDec,
+            bool                         isVerbose,
+            StepAccessorPtr              stepAccessor,
+            TimeAccessorPtr              timeAccessor,
+            std::shared_ptr<MicroState> &microState,
+            gmx_enerdata_t              *enerd,
+            tensor                       force_vir,
+            rvec                         mu_tot,
+            FILE                        *fplog,
+            const t_commrec             *cr,
+            const t_inputrec            *inputrec,
+            const t_mdatoms             *mdatoms,
+            t_nrnb                      *nrnb,
+            t_forcerec                  *fr,
+            t_fcdata                    *fcd,
+            gmx_wallcycle               *wcycle,
+            gmx_localtop_t              *top,
+            const gmx_groups_t          *groups,
+            Constraints                 *constr,
+            gmx_shellfc_t               *shellfc,
+            const gmx_mtop_t            *top_global,
+            PpForceWorkload             *ppForceWorkload);
 
         //! IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -171,16 +171,16 @@ class ShellFCElement :
         const DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion_;
         const DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion_;
 
-        StepAccessorPtr stepAccessor_;
-        TimeAccessorPtr timeAccessor_;
+        StepAccessorPtr                                 stepAccessor_;
+        TimeAccessorPtr                                 timeAccessor_;
+
+        std::shared_ptr<MicroState>                     microState_;
 
         void setup();
         void run();
         void teardown();
 
         // TODO: Rethink access to these
-        t_state                  *localState_;
-        ArrayRefWithPadding<RVec> f_;
         gmx_enerdata_t           *enerd_;
         real                     *mu_tot_;
         FILE                     *fplog_;

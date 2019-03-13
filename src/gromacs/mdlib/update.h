@@ -66,6 +66,7 @@ namespace gmx
 {
 class BoxDeformation;
 class Constraints;
+class MicroState;
 
 
 /*! \libinternal
@@ -141,9 +142,9 @@ class UpdateVelocity : public IUpdateElement
 {
     public:
         UpdateVelocity(
-            real timestep, const rvec *nAccelerationGroups,
-            const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
-            t_state *localState, ArrayRefWithPadding<RVec> f);
+            real timestep, std::shared_ptr<MicroState> &microState,
+            const rvec *nAccelerationGroups, const ivec *nFreezeGroups,
+            const t_mdatoms *mdatoms);
 
         ElementFunctionTypePtr registerSetup() override;
         ElementFunctionTypePtr registerRun() override;
@@ -153,13 +154,12 @@ class UpdateVelocity : public IUpdateElement
 
     private:
         real timestep_;
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
         const t_mdatoms          *mdatoms_;
         const rvec               *nAccelerationGroups_;
         const ivec               *nFreezeGroups_;
-        t_state                  *localState_;
-        ArrayRefWithPadding<RVec> f_;
 
         // Run the update
         void runPartial(int start, int nrend);
@@ -170,8 +170,8 @@ class UpdatePosition : public IUpdateElement
 {
     public:
         UpdatePosition(
-            real timestep, const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
-            t_state *localState, Update *upd);
+            real timestep, std::shared_ptr<MicroState> &microState,
+            const ivec *nFreezeGroups, const t_mdatoms *mdatoms, Update *upd);
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -182,11 +182,11 @@ class UpdatePosition : public IUpdateElement
 
     private:
         real timestep_;
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
         const t_mdatoms *mdatoms_;
         const ivec      *nFreezeGroups_;
-        t_state         *localState_;
         Update          *upd_;
 
         // Run the update
@@ -198,9 +198,9 @@ class UpdateLeapfrog : public IUpdateElement
 {
     public:
         UpdateLeapfrog(
-            real timestep, StepAccessorPtr stepAccessor,
+            real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
             const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
-            t_state *localState, ArrayRefWithPadding<RVec> f, Update *upd);
+            Update *upd);
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -210,15 +210,14 @@ class UpdateLeapfrog : public IUpdateElement
         UpdateRunFunctionTypePtr registerUpdateRun() override;
 
     private:
-        real            timestep_;
-        StepAccessorPtr stepAccessor_;
+        real                        timestep_;
+        StepAccessorPtr             stepAccessor_;
+        std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
         const t_inputrec         *inputrec_;
         const t_mdatoms          *mdatoms_;
         const gmx_ekindata_t     *ekind_;
-        t_state                  *localState_;
-        ArrayRefWithPadding<RVec> f_;
         Update                   *upd_;
 
         // Run the update
@@ -231,7 +230,8 @@ class FinishUpdateElement : public IIntegratorElement
 {
     public:
         FinishUpdateElement(
-            const t_mdatoms *mdatoms, t_state *localState, Update *upd,
+            std::shared_ptr<MicroState> &microState,
+            const t_mdatoms *mdatoms, Update *upd,
             const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr);
 
         // IUpdateElement functions
@@ -240,9 +240,10 @@ class FinishUpdateElement : public IIntegratorElement
         ElementFunctionTypePtr registerTeardown() override;
 
     private:
+        std::shared_ptr<MicroState> microState_;
+
         // TODO: Rethink access to these
         const t_mdatoms  *mdatoms_;
-        t_state          *localState_;
         Update           *upd_;
         const t_inputrec *inputrec_;
         gmx_wallcycle    *wcycle_;
@@ -257,7 +258,7 @@ class FinishUpdateElement : public IIntegratorElement
 class ResetVForVV : public IIntegratorElement
 {
     public:
-        explicit ResetVForVV(t_state *localState);
+        explicit ResetVForVV(std::shared_ptr<MicroState> &microState);
 
         ElementFunctionTypePtr registerSetup() override;
         ElementFunctionTypePtr registerRun() override;
@@ -267,10 +268,11 @@ class ResetVForVV : public IIntegratorElement
         bool  firstStep_;
         rvec *vbuf_;
 
+
+        std::shared_ptr<MicroState> microState_;
+
         void setup();
         void run();
-
-        t_state *localState_;
 };
 
 }; // namespace gmx

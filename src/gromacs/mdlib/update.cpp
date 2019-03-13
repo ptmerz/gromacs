@@ -2060,15 +2060,14 @@ std::unique_ptr<UpdateStep> UpdateStepBuilder::build(const t_mdatoms *mdatoms, g
 }
 
 UpdateVelocity::UpdateVelocity(
-        real timestep, const rvec *nAccelerationGroups,
-        const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
-        t_state *localState, ArrayRefWithPadding<RVec> f) :
+        real timestep, std::shared_ptr<MicroState> &microState,
+        const rvec *nAccelerationGroups, const ivec *nFreezeGroups,
+        const t_mdatoms *mdatoms) :
     timestep_(timestep),
+    microState_(microState),
     mdatoms_(mdatoms),
     nAccelerationGroups_(nAccelerationGroups),
-    nFreezeGroups_(nFreezeGroups),
-    localState_(localState),
-    f_(std::move(f))
+    nFreezeGroups_(nFreezeGroups)
 {}
 
 void UpdateVelocity::runPartial(int start, int nrend)
@@ -2078,8 +2077,8 @@ void UpdateVelocity::runPartial(int start, int nrend)
     const real veta      = 0.0;
     const real alpha     = 0.0;
 
-    auto       v = localState_->v.rvec_array();
-    const auto f = as_rvec_array(f_.unpaddedArrayRef().data());
+    auto       v = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    const auto f = as_rvec_array(microState_->readForce().unpaddedArrayRef().data());
 
     do_update_vv_vel(
             start, nrend,
@@ -2114,12 +2113,12 @@ UpdateRunFunctionTypePtr UpdateVelocity::registerUpdateRun()
 }
 
 UpdatePosition::UpdatePosition(
-        real timestep, const ivec *nFreezeGroups, const t_mdatoms *mdatoms,
-        t_state *localState, Update *upd) :
+        real timestep, std::shared_ptr<MicroState> &microState,
+        const ivec *nFreezeGroups, const t_mdatoms *mdatoms, Update *upd) :
     timestep_(timestep),
+    microState_(microState),
     mdatoms_(mdatoms),
     nFreezeGroups_(nFreezeGroups),
-    localState_(localState),
     upd_(upd)
 {}
 
@@ -2129,9 +2128,9 @@ void UpdatePosition::runPartial(int start, int nrend)
     const bool bExtended = false;
     const real veta      = 0.0;
 
-    const auto x      = localState_->x.rvec_array();
+    const auto x      = as_rvec_array(microState_->readPosition().paddedArrayRef().data());
     auto       xprime = upd_->xp()->rvec_array();
-    const auto v      = localState_->v.rvec_array();
+    const auto v      = as_rvec_array(microState_->readVelocity().paddedArrayRef().data());
 
     do_update_vv_pos(
             start, nrend,
@@ -2165,16 +2164,15 @@ UpdateRunFunctionTypePtr UpdatePosition::registerUpdateRun()
 }
 
 UpdateLeapfrog::UpdateLeapfrog(
-        real timestep, StepAccessorPtr stepAccessor,
+        real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
         const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
-        t_state *localState, ArrayRefWithPadding<RVec> f, Update *upd) :
+        Update *upd) :
     timestep_(timestep),
     stepAccessor_(std::move(stepAccessor)),
+    microState_(microState),
     inputrec_(inputrec),
     mdatoms_(mdatoms),
     ekind_(ekind),
-    localState_(localState),
-    f_(std::move(f)),
     upd_(upd)
 {
     GMX_ASSERT(stepAccessor_, "UpdateLeapfrog constructor: stepAccessor can not be nullptr");
@@ -2185,11 +2183,11 @@ void UpdateLeapfrog::runPartial(int start, int nrend)
     const rvec  * M              = nullptr;
     const double *nosehoover_vxi = nullptr;
 
-    const auto    x   = localState_->x.rvec_array();
+    const auto    x   = as_rvec_array(microState_->readPosition().paddedArrayRef().data());
     auto          xp  = upd_->xp()->rvec_array();
-    auto          v   = localState_->v.rvec_array();
-    const auto    f   = as_rvec_array(f_.unpaddedArrayRef().data());
-    const auto    box = localState_->box;
+    auto          v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    const auto    f   = as_rvec_array(microState_->readForce().unpaddedArrayRef().data());
+    const auto    box = microState_->localState()->box;
 
     do_update_md(
             start, nrend, (*stepAccessor_)(), timestep_,
@@ -2224,10 +2222,11 @@ ElementFunctionTypePtr UpdateLeapfrog::registerTeardown()
 }
 
 FinishUpdateElement::FinishUpdateElement(
-        const t_mdatoms *mdatoms, t_state *localState, Update *upd,
+        std::shared_ptr<MicroState> &microState,
+        const t_mdatoms *mdatoms, Update *upd,
         const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr) :
+    microState_(microState),
     mdatoms_(mdatoms),
-    localState_(localState),
     upd_(upd),
     inputrec_(inputrec),
     wcycle_(wcycle),
@@ -2239,7 +2238,7 @@ void FinishUpdateElement::run()
     const t_graph *graph = nullptr;
     t_nrnb        *nrnb  = nullptr;
     finish_update(
-            inputrec_, mdatoms_, localState_,
+            inputrec_, mdatoms_, microState_->localState(),
             graph, nrnb, wcycle_, upd_, constr_);
 }
 
@@ -2257,10 +2256,10 @@ ElementFunctionTypePtr FinishUpdateElement::registerTeardown()
     return nullptr;
 }
 
-ResetVForVV::ResetVForVV(t_state *localState) :
+ResetVForVV::ResetVForVV(std::shared_ptr<MicroState> &microState) :
     firstStep_(true),
     vbuf_(nullptr),
-    localState_(localState)
+    microState_(microState)
 {}
 
 void ResetVForVV::setup()
@@ -2271,8 +2270,10 @@ void ResetVForVV::setup()
      * revert back to the initial coordinates
      * so that the input is actually the initial step.
      */
-    snew(vbuf_, localState_->natoms);
-    copy_rvecn(localState_->v.rvec_array(), vbuf_, 0, localState_->natoms);
+    int  natoms = microState_->localState()->natoms;
+    snew(vbuf_, natoms);
+    auto v = as_rvec_array(microState_->readVelocity().paddedArrayRef().data());
+    copy_rvecn(v, vbuf_, 0, natoms);
     /* should make this better for parallelizing? */
 }
 
@@ -2281,7 +2282,9 @@ void ResetVForVV::run()
     if (firstStep_)
     {
         /* if it's the initial step, we performed this first step just to get the constraint virial */
-        copy_rvecn(vbuf_, localState_->v.rvec_array(), 0, localState_->natoms);
+        auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+        int  natoms = microState_->localState()->natoms;
+        copy_rvecn(vbuf_, v, 0, natoms);
         sfree(vbuf_);
         firstStep_ = false;
     }

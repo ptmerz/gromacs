@@ -1361,30 +1361,29 @@ void done_shellfc(FILE *fplog, gmx_shellfc_t *shfc, int64_t numSteps)
 namespace gmx
 {
 ShellFCElement::ShellFCElement(
-        bool                      isDynamicBox,
-        bool                      isDomDec,
-        bool                      isVerbose,
-        StepAccessorPtr           stepAccessor,
-        TimeAccessorPtr           timeAccessor,
-        t_state                  *localState,
-        ArrayRefWithPadding<RVec> f,
-        gmx_enerdata_t           *enerd,
-        tensor                    force_vir,
-        rvec                      mu_tot,
-        FILE                     *fplog,
-        const t_commrec          *cr,
-        const t_inputrec         *inputrec,
-        const t_mdatoms          *mdatoms,
-        t_nrnb                   *nrnb,
-        t_forcerec               *fr,
-        t_fcdata                 *fcd,
-        gmx_wallcycle_t           wcycle,
-        gmx_localtop_t           *top,
-        const gmx_groups_t       *groups,
-        Constraints              *constr,
-        gmx_shellfc_t            *shellfc,
-        const gmx_mtop_t         *top_global,
-        PpForceWorkload          *ppForceWorkload) :
+        bool                         isDynamicBox,
+        bool                         isDomDec,
+        bool                         isVerbose,
+        StepAccessorPtr              stepAccessor,
+        TimeAccessorPtr              timeAccessor,
+        std::shared_ptr<MicroState> &microState,
+        gmx_enerdata_t              *enerd,
+        tensor                       force_vir,
+        rvec                         mu_tot,
+        FILE                        *fplog,
+        const t_commrec             *cr,
+        const t_inputrec            *inputrec,
+        const t_mdatoms             *mdatoms,
+        t_nrnb                      *nrnb,
+        t_forcerec                  *fr,
+        t_fcdata                    *fcd,
+        gmx_wallcycle_t              wcycle,
+        gmx_localtop_t              *top,
+        const gmx_groups_t          *groups,
+        Constraints                 *constr,
+        gmx_shellfc_t               *shellfc,
+        const gmx_mtop_t            *top_global,
+        PpForceWorkload             *ppForceWorkload) :
     isDynamicBox_(isDynamicBox),
     isVerbose_(isVerbose),
     doNeighborSearch_(false),
@@ -1399,8 +1398,7 @@ ShellFCElement::ShellFCElement(
                           DdCloseBalanceRegionAfterForceComputation::no),
     stepAccessor_(std::move(stepAccessor)),
     timeAccessor_(std::move(timeAccessor)),
-    localState_(localState),
-    f_(std::move(f)),
+    microState_(microState),
     enerd_(enerd),
     mu_tot_(mu_tot),
     fplog_(fplog),
@@ -1449,12 +1447,15 @@ void ShellFCElement::run()
 
     clear_mat(force_vir_);
 
+    auto localState = microState_->localState();
+    auto forces     = microState_->writeForce();
+
     /* Now is the time to relax the shells */
     relax_shell_flexcon(fplog_, cr_, ms, isVerbose_,
                         enforcedRotation, currentStep,
                         inputrec_, doNeighborSearch_, flags, top_,
                         constr_, enerd_, fcd_,
-                        localState_, f_, force_vir_, mdatoms_,
+                        localState, forces, force_vir_, mdatoms_,
                         nrnb_, wcycle_, graph_, groups_,
                         shellfc_, fr_, ppForceWorkload_, currentTime, mu_tot_,
                         vsite, ddOpenBalanceRegion_, ddCloseBalanceRegion_);

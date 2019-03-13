@@ -58,6 +58,7 @@
 #include "gromacs/utility/compare.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "commrec.h"
 
 /* The source code in this file should be thread-safe.
       Please keep it that way. */
@@ -288,8 +289,6 @@ MicroState::MicroState(
         FILE                     *fplog,
         const t_commrec          *cr,
         t_state                  *globalState,
-        t_state                  *localState,
-        ArrayRefWithPadding<RVec> f,
         int                       nstxout,
         int                       nstvout,
         int                       nstfout,
@@ -301,13 +300,24 @@ MicroState::MicroState(
     nstxout_compressed_(nstxout_compressed),
     stepAccessor_(std::move(stepAccessor)),
     timeAccessor_(std::move(timeAccessor)),
+    f_({}
+       ),
     localStateBackup_(nullptr),
     fplog_(fplog),
     cr_(cr),
-    globalState_(globalState),
-    localState_(localState),
-    f_(std::move(f))
-{}
+    globalState_(globalState)
+{
+    // Local state only becomes valid now.
+    if (DOMAINDECOMP(cr))
+    {
+        localStateInstance_ = std::make_unique<t_state>();
+        localState_         = localStateInstance_.get();
+    }
+    else
+    {
+        localState_ = globalState_;
+    }
+}
 
 void MicroState::write(gmx_mdoutf_t outf)
 {
@@ -354,7 +364,7 @@ void MicroState::write(gmx_mdoutf_t outf)
 
     mdoutf_write_to_trajectory_files(
             fplog_, cr_, outf, mdof_flags, natoms_,
-            currentStep, currentTime, localStateBackup_, globalState_, observablesHistory, f_.paddedArrayRef());
+            currentStep, currentTime, localStateBackup_, globalState_, observablesHistory, f_);
 }
 
 TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterSetup()
@@ -389,4 +399,55 @@ void MicroState::writeTrajectoryThisStep()
     localStateBackup_ = new t_state(*localState_);
 }
 
+ArrayRefWithPadding<RVec> MicroState::writePosition()
+{
+    return localState_->x.arrayRefWithPadding();
+}
+
+ArrayRefWithPadding<const RVec> MicroState::readPosition()
+{
+    return localState_->x.constArrayRefWithPadding();
+}
+
+ArrayRefWithPadding<RVec> MicroState::writeVelocity()
+{
+    return localState_->v.arrayRefWithPadding();
+}
+
+ArrayRefWithPadding<const RVec> MicroState::readVelocity()
+{
+    return localState_->v.constArrayRefWithPadding();
+}
+
+ArrayRefWithPadding<RVec> MicroState::writeForce()
+{
+    return f_.arrayRefWithPadding();
+}
+
+ArrayRefWithPadding<const RVec> MicroState::readForce()
+{
+    return f_.constArrayRefWithPadding();
+}
+
+t_state* MicroState::localState()
+{
+    return localState_;
+}
+
+t_state* MicroState::globalState()
+{
+    return globalState_;
+}
+
+PaddedVector<RVec>* MicroState::forcePointer()
+{
+    return &f_;
+}
+
+/*
+   PaddedVector<gmx::RVec>* MicroState::forces()
+   {
+    return f_;
+   }
+ */
 }

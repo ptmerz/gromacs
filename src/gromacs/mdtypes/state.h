@@ -330,8 +330,6 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
             FILE                     *fplog,
             const t_commrec          *cr,
             t_state                  *globalState,
-            t_state                  *localState,
-            ArrayRefWithPadding<RVec> f,
             int                       nstxout,
             int                       nstvout,
             int                       nstfout,
@@ -346,6 +344,19 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         // ITrajectorySignallerClient
         TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() override;
 
+        // Allow access to state
+        ArrayRefWithPadding<RVec> writePosition();
+        ArrayRefWithPadding<const RVec> readPosition();
+        ArrayRefWithPadding<RVec> writeVelocity();
+        ArrayRefWithPadding<const RVec> readVelocity();
+        ArrayRefWithPadding<RVec> writeForce();
+        ArrayRefWithPadding<const RVec> readForce();
+
+        // Access to legacy state
+        t_state* localState();
+        t_state* globalState();
+        PaddedVector<gmx::RVec>* forcePointer();
+
     private:
         int natoms_;
         int nstxout_;
@@ -357,7 +368,13 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         StepAccessorPtr stepAccessor_;
         TimeAccessorPtr timeAccessor_;
 
-        t_state        *localStateBackup_;
+        //! The local state
+        std::unique_ptr<t_state> localStateInstance_;
+        t_state                 *localState_;
+
+        PaddedVector<RVec>       f_;
+
+        t_state                 *localStateBackup_;
 
         void write(gmx_mdoutf_t outf);
         void writeTrajectoryThisStep();
@@ -366,8 +383,6 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         FILE                     *fplog_;
         const t_commrec          *cr_;
         t_state                  *globalState_;
-        t_state                  *localState_;
-        ArrayRefWithPadding<RVec> f_;
 };
 
 
