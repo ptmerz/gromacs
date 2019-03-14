@@ -356,9 +356,11 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         int localNumAtoms();
 
         // Access to legacy state
-        t_state* localState();
+        std::unique_ptr<t_state> localState();
+        void setLocalState(std::unique_ptr<t_state> state);
         t_state* globalState();
         PaddedVector<gmx::RVec>* forcePointer();
+        int getFlags();
 
     private:
         int totalNAtoms_;
@@ -368,16 +370,18 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         int nstxout_compressed_;
 
         // Access step & time
-        StepAccessorPtr stepAccessor_;
-        TimeAccessorPtr timeAccessor_;
+        StepAccessorPtr          stepAccessor_;
+        TimeAccessorPtr          timeAccessor_;
 
-        //! The local state
-        std::unique_ptr<t_state> localStateInstance_;
-        t_state                 *localState_;
-
+        int                      localNAtoms_;
+        PaddedHostVector<RVec>   x_;
+        PaddedVector<RVec>       v_;
         PaddedVector<RVec>       f_;
+        matrix                   box_;
+        int                      flags_;
+        int ddpCount;
 
-        t_state                 *localStateBackup_;
+        std::unique_ptr<t_state> localStateBackup_;
 
         void write(gmx_mdoutf_t outf);
         void writeTrajectoryThisStep();

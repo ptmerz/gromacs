@@ -1266,7 +1266,7 @@ ConstrainCoordinates::ConstrainCoordinates(
     GMX_ASSERT(stepAccessor_, "ConstrainCoordinates constructor: stepAccessor can not be nullptr");
 
     // TODO: Include a way to turn initial constraining on / off
-    if (constr && (microState->localState()->flags & (1 << estV)))
+    if (constr && (microState->getFlags() & (1 << estV)))
     {
         real lambda = 0;
         do_constrain_first(

@@ -1455,10 +1455,12 @@ void ShellFCElement::run()
                         enforcedRotation, currentStep,
                         inputrec_, doNeighborSearch_, flags, top_,
                         constr_, enerd_, fcd_,
-                        localState, forces, force_vir_, mdatoms_,
+                        localState.get(), forces, force_vir_, mdatoms_,
                         nrnb_, wcycle_, graph_, groups_,
                         shellfc_, fr_, ppForceWorkload_, currentTime, mu_tot_,
                         vsite, ddOpenBalanceRegion_, ddCloseBalanceRegion_);
+
+    microState_->setLocalState(std::move(localState));
 
     doNeighborSearch_    = false;
     calculateVirial_     = false;

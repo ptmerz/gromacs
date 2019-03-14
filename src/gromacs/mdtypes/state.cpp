@@ -300,22 +300,27 @@ MicroState::MicroState(
     nstxout_compressed_(nstxout_compressed),
     stepAccessor_(std::move(stepAccessor)),
     timeAccessor_(std::move(timeAccessor)),
+    localNAtoms_(0),
+    x_({}
+       ),
+    v_({}),
     f_({}
        ),
-    localStateBackup_(nullptr),
+    flags_(0),
+    ddpCount(0),
     fplog_(fplog),
     cr_(cr),
     globalState_(globalState)
 {
+    clear_mat(box_);
     // Local state only becomes valid now.
-    if (DOMAINDECOMP(cr))
+    if (!DOMAINDECOMP(cr))
     {
-        localStateInstance_ = std::make_unique<t_state>();
-        localState_         = localStateInstance_.get();
-    }
-    else
-    {
-        localState_ = globalState_;
+        localNAtoms_ = globalState->natoms;
+        x_           = globalState->x;
+        v_           = globalState->v;
+        copy_mat(globalState->box, box_);
+        flags_ = globalState->flags;
     }
 }
 
@@ -364,7 +369,8 @@ void MicroState::write(gmx_mdoutf_t outf)
 
     mdoutf_write_to_trajectory_files(
             fplog_, cr_, outf, mdof_flags, totalNAtoms_,
-            currentStep, currentTime, localStateBackup_, globalState_, observablesHistory, f_);
+            currentStep, currentTime, localStateBackup_.get(), globalState_, observablesHistory, f_);
+    localStateBackup_.reset();
 }
 
 TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterSetup()
@@ -396,27 +402,27 @@ TrajectorySignallerCallbackPtr MicroState::getTrajectorySignallerCallback()
 
 void MicroState::writeTrajectoryThisStep()
 {
-    localStateBackup_ = new t_state(*localState_);
+    localStateBackup_ = localState();
 }
 
 ArrayRefWithPadding<RVec> MicroState::writePosition()
 {
-    return localState_->x.arrayRefWithPadding();
+    return x_.arrayRefWithPadding();
 }
 
 ArrayRefWithPadding<const RVec> MicroState::readPosition()
 {
-    return localState_->x.constArrayRefWithPadding();
+    return x_.constArrayRefWithPadding();
 }
 
 ArrayRefWithPadding<RVec> MicroState::writeVelocity()
 {
-    return localState_->v.arrayRefWithPadding();
+    return v_.arrayRefWithPadding();
 }
 
 ArrayRefWithPadding<const RVec> MicroState::readVelocity()
 {
-    return localState_->v.constArrayRefWithPadding();
+    return v_.constArrayRefWithPadding();
 }
 
 ArrayRefWithPadding<RVec> MicroState::writeForce()
@@ -429,9 +435,28 @@ ArrayRefWithPadding<const RVec> MicroState::readForce()
     return f_.constArrayRefWithPadding();
 }
 
-t_state* MicroState::localState()
+std::unique_ptr<t_state> MicroState::localState()
 {
-    return localState_;
+    auto state = std::make_unique<t_state>();
+    state_change_natoms(state.get(), localNAtoms_);
+    state->x = x_;
+    state->v = v_;
+    copy_mat(box_, state->box);
+    state->flags     = flags_;
+    state->ddp_count = ddpCount;
+    return state;
+}
+
+void MicroState::setLocalState(std::unique_ptr<t_state> state)
+{
+    localNAtoms_ = state->natoms;
+    x_.resizeWithPadding(localNAtoms_);
+    v_.resizeWithPadding(localNAtoms_);
+    x_ = state->x;
+    v_ = state->v;
+    copy_mat(state->box, box_);
+    flags_   = state->flags;
+    ddpCount = state->ddp_count;
 }
 
 t_state* MicroState::globalState()
@@ -446,11 +471,16 @@ PaddedVector<RVec>* MicroState::forcePointer()
 
 rvec* MicroState::getBox()
 {
-    return localState_->box;
+    return box_;
 }
 
 int MicroState::localNumAtoms()
 {
-    return localState_->natoms;
+    return localNAtoms_;
+}
+
+int MicroState::getFlags()
+{
+    return flags_;
 }
 }

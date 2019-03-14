@@ -3164,7 +3164,7 @@ void gmx::DomDecElement::init()
         auto forcePointer = microState_->forcePointer();
 
         dd_init_local_top(*top_global_, localTopology_);
-        dd_init_local_state(cr_->dd, globalState, localState);
+        dd_init_local_state(cr_->dd, globalState, localState.get());
 
         // constant choices for this call to dd_partition_system
         const bool     verbose       = false;
@@ -3178,11 +3178,12 @@ void gmx::DomDecElement::init()
         /* Distribute the charge groups over the nodes from the master node */
         dd_partition_system(fplog_, mdlog_, inputrec_->init_step, cr_, isMasterState, nstglobalcomm,
                             globalState, *top_global_, inputrec_,
-                            localState, forcePointer, mdAtoms_, localTopology_, fr_,
+                            localState.get(), forcePointer, mdAtoms_, localTopology_, fr_,
                             vsite, constr_,
                             nrnb_, wcycle, verbose);
         (*checkNOfBondedInteractionsCallback_)();
         upd_->setNumAtoms(localState->natoms);
+        microState_->setLocalState(std::move(localState));
     }
     else
     {
@@ -3190,7 +3191,6 @@ void gmx::DomDecElement::init()
         gmx_vsite_t *vsite = nullptr;
         t_graph     *graph = nullptr;
 
-        auto         localState   = microState_->localState();
         auto         globalState  = microState_->globalState();
         auto         forcePointer = microState_->forcePointer();
 
@@ -3201,7 +3201,7 @@ void gmx::DomDecElement::init()
         mdAlgorithmsSetupAtomData(cr_, inputrec_, *top_global_, localTopology_, fr_,
                                   &graph, mdAtoms_, constr_, vsite, shellfc_);
 
-        upd_->setNumAtoms(localState->natoms);
+        upd_->setNumAtoms(microState_->localNumAtoms());
     }
 }
 
@@ -3230,12 +3230,13 @@ void gmx::DomDecElement::run()
     dd_partition_system(fplog_, mdlog_, step, cr_,
                         isMasterState, nstglobalcomm_,
                         globalState, *top_global_, inputrec_,
-                        localState, forcePointer, mdAtoms_, localTopology_, fr_,
+                        localState.get(), forcePointer, mdAtoms_, localTopology_, fr_,
                         vsite, constr_,
                         nrnb_, wcycle_,
                         doVerbose);  // was: do_verbose && !bPMETunePrinting
     (*checkNOfBondedInteractionsCallback_)();
     upd_->setNumAtoms(localState->natoms);
+    microState_->setLocalState(std::move(localState));
     isNSStep_    = false;
     isFirstStep_ = false;
 }
