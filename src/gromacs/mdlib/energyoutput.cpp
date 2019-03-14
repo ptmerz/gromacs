@@ -1915,7 +1915,8 @@ void EnergyElement::step()
 {
     if (isEnergyCalculationStep_ || writeEnergy_)
     {
-        auto localState = microState_->localState();
+        // All the state is used for is turned off for now (free energy, temperature / pressure coupling)
+        t_state *localState = nullptr;
         enerd_->term[F_ETOT] = enerd_->term[F_EPOT] + enerd_->term[F_EKIN];
         energyOutput_.addDataAtEnergyStep(
                 isFreeEnergyCalculationStep_, isEnergyCalculationStep_,
