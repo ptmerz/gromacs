@@ -156,12 +156,12 @@ int multisim_min(const gmx_multisim_t *ms, int nmin, int n)
    e.g. bReadEkin is only true when restoring from checkpoint */
 void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_inputrec *ir,
                      t_forcerec *fr, gmx_ekindata_t *ekind,
-                     t_state *state, t_mdatoms *mdatoms,
+                     rvec *x, rvec *v, matrix box, real vdwLambda, t_mdatoms *mdatoms,
                      t_nrnb *nrnb, t_vcm *vcm, gmx_wallcycle_t wcycle,
                      gmx_enerdata_t *enerd, tensor force_vir, tensor shake_vir, tensor total_vir,
                      tensor pres, rvec mu_tot, gmx::Constraints *constr,
                      gmx::SimulationSignaller *signalCoordinator,
-                     matrix box,
+                     matrix lastbox,
                      gmx::AccumulateGlobals *accumulateGlobals,
                      int *totalNumberOfBondedInteractions,
                      gmx_bool *bSumEkinhOld, int flags)
@@ -206,7 +206,9 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
         }
         if (!bReadEkin)
         {
-            calc_ke_part(state, &(ir->opts), mdatoms, ekind, nrnb, bEkinAveVel);
+            calc_ke_part(
+                    x, v, box,
+                    &(ir->opts), mdatoms, ekind, nrnb, bEkinAveVel);
         }
     }
 
@@ -214,7 +216,7 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
     if (bStopCM)
     {
         calc_vcm_grp(0, mdatoms->homenr, mdatoms,
-                     state->x.rvec_array(), state->v.rvec_array(), vcm);
+                     x, v, vcm);
     }
 
     if (bTemp || bStopCM || bPres || bEner || bConstrain || bCheckNumberOfBondedInteractions)
@@ -257,10 +259,10 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
         rvec *xPtr = nullptr;
         if (vcm->mode == ecmANGULAR || (vcm->mode == ecmLINEAR_ACCELERATION_CORRECTION && !(flags & CGLO_INITIALIZATION)))
         {
-            xPtr = state->x.rvec_array();
+            xPtr = x;
         }
         do_stopcm_grp(*mdatoms,
-                      xPtr, state->v.rvec_array(), *vcm);
+                      xPtr, v, *vcm);
         inc_nrnb(nrnb, eNR_STOPCM, mdatoms->homenr);
     }
 
@@ -290,7 +292,7 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
 
     if (bEner || bPres || bConstrain)
     {
-        calc_dispcorr(ir, fr, box, state->lambda[efptVDW],
+        calc_dispcorr(ir, fr, lastbox, vdwLambda,
                       corr_pres, corr_vir, &prescorr, &enercorr, &dvdlcorr);
     }
 
@@ -311,7 +313,7 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
          * Use the box from last timestep since we already called update().
          */
 
-        enerd->term[F_PRES] = calc_pres(fr->ePBC, ir->nwall, box, ekind->ekin, total_vir, pres);
+        enerd->term[F_PRES] = calc_pres(fr->ePBC, ir->nwall, lastbox, ekind->ekin, total_vir, pres);
 
         /* Calculate long range corrections to pressure and energy */
         /* this adds to enerd->term[F_PRES] and enerd->term[F_ETOT],
@@ -734,7 +736,10 @@ void ComputeGlobalsElement::setup()
 
     bool bSumEkinhOld = false;
 
-    auto localState = microState_->localState();
+    auto x      = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    auto box    = microState_->getBox();
+    real lambda = 0;
 
     /* To minimize communication, compute_globals computes the COM velocity
      * and the kinetic energy for the velocities without COM motion removed.
@@ -749,15 +754,17 @@ void ComputeGlobalsElement::setup()
             cglo_flags_iteration |= CGLO_STOPCM;
             cglo_flags_iteration &= ~CGLO_TEMPERATURE;
         }
-        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState, mdatoms_, nrnb_, vcm_,
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_,
+                        x, v, box, lambda,
+                        mdatoms_, nrnb_, vcm_,
                         nullptr, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
-                        constr_, &nullSignaller, localState->box,
+                        constr_, &nullSignaller, box,
                         &accumulateGlobals_,
                         &totalNumberOfBondedInteractions_, &bSumEkinhOld, cglo_flags_iteration
                         | (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0));
     }
     checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
-                                    top_global_, top_, localState,
+                                    top_global_, top_, x, box,
                                     &shouldCheckNumberOfBondedInteractions_);
 }
 
@@ -794,7 +801,11 @@ void ComputeGlobalsElement::run()
         SimulationSignaller signaller(&signals_, cr_, ms, doInterSimSignal, doIntraSimSignal);
 
         bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
-        auto                localState   = microState_->localState();
+
+        auto                x      = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+        auto                v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+        auto                box    = microState_->getBox();
+        real                lambda = 0;
 
         int                 flags =
             CGLO_TEMPERATURE |     // TODO: This used not to be done every time when doing vv - why?
@@ -816,17 +827,19 @@ void ComputeGlobalsElement::run()
             flags |= CGLO_STOPCM;
         }
 
-        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_, localState, mdatoms_, nrnb_, vcm_,
+        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_,
+                        x, v, box, lambda,
+                        mdatoms_, nrnb_, vcm_,
                         wcycle_, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
                         constr_, &signaller,
-                        localState->box,  // TODO: was lastbox - might be a problem when box changes!
+                        box,  // TODO: was lastbox - might be a problem when box changes!
                         &accumulateGlobals_,
                         &totalNumberOfBondedInteractions_, &bSumEkinhOld,
                         flags |
                         (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
                         );
         checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
-                                        top_global_, top_, localState,
+                                        top_global_, top_, x, box,
                                         &shouldCheckNumberOfBondedInteractions_);
 
         needGlobalReduction_ = false;

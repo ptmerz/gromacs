@@ -121,7 +121,8 @@ void checkNumberOfBondedInteractions(const gmx::MDLogger  &mdlog,
                                      int                   totalNumberOfBondedInteractions,
                                      const gmx_mtop_t     *top_global,
                                      const gmx_localtop_t *top_local,
-                                     const t_state        *state,
+                                     const rvec           *x,
+                                     const matrix          box,
                                      bool                 *shouldCheckNumberOfBondedInteractions);
 
 #endif
