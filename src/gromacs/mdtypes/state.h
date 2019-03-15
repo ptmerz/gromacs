@@ -68,6 +68,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
 
+struct t_mdatoms;
 struct t_inputrec;
 
 namespace gmx
@@ -347,6 +348,8 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         // Allow access to state
         ArrayRefWithPadding<RVec> writePosition();
         ArrayRefWithPadding<const RVec> readPosition();
+        ArrayRefWithPadding<RVec> writePreviousPosition();
+        ArrayRefWithPadding<const RVec> readPreviousPosition();
         ArrayRefWithPadding<RVec> writeVelocity();
         ArrayRefWithPadding<const RVec> readVelocity();
         ArrayRefWithPadding<RVec> writeForce();
@@ -361,6 +364,8 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         t_state* globalState();
         PaddedVector<gmx::RVec>* forcePointer();
         int getFlags();
+        void copyPosition();
+        void copyPosition(int start, int end);
 
     private:
         int totalNAtoms_;
@@ -375,11 +380,12 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
 
         int                      localNAtoms_;
         PaddedHostVector<RVec>   x_;
+        PaddedVector<RVec>       previousX_;
         PaddedVector<RVec>       v_;
         PaddedVector<RVec>       f_;
         matrix                   box_;
         int                      flags_;
-        int ddpCount;
+        int                      ddpCount;
 
         std::unique_ptr<t_state> localStateBackup_;
 

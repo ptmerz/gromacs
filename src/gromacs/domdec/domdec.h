@@ -418,7 +418,6 @@ class DomDecElement :
             t_forcerec                           *fr,
             gmx_localtop_t                       *localTopology,
             gmx_shellfc_t                        *shellfc,
-            Update                               *upd,
             CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback);
 
         ElementFunctionTypePtr registerSetup() override;
@@ -474,8 +473,6 @@ class DomDecElement :
         gmx_localtop_t                     *localTopology_;
         //! shellfc
         gmx_shellfc_t                      *shellfc_;
-        //! Update
-        Update                             *upd_;
 };
 }
 

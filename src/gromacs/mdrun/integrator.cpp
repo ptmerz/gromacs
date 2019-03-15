@@ -78,7 +78,6 @@ SimpleIntegrator::SimpleIntegrator(
         FILE                    *fplog,
         t_commrec               *cr,
         const MdrunOptions      &mdrunOptions,
-        BoxDeformation          *deform,
         t_inputrec              *inputrec,
         gmx_mtop_t              *top_global,
         t_nrnb                  *nrnb,
@@ -95,7 +94,6 @@ SimpleIntegrator::SimpleIntegrator(
     localTopology_(new gmx_localtop_t()),
     shellfc_(nullptr),
     do_verbose_(false),
-    upd_(new Update(inputrec, deform)),
     eKinData_(std::make_unique<gmx_ekindata_t>()),
     vcm_(new t_vcm(top_global->groups, *inputrec))
 {
@@ -439,7 +437,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
      */
     auto integrator = std::unique_ptr<SimpleIntegrator>(
                 new SimpleIntegrator(
-                        fplog_, cr_, mdrunOptions_, deform_, inputrec_,
+                        fplog_, cr_, mdrunOptions_, inputrec_,
                         top_global_, nrnb_, constr_,
                         wcycle_, walltime_accounting_, stepManager->getStepAccessor()));
 
@@ -501,7 +499,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
                 mdrunOptions_.verbose, mdrunOptions_.verboseStepPrintInterval,
                 microState, fplog_, cr_, mdlog_, constr_, inputrec_, top_global_,
                 mdAtoms_, nrnb_, wcycle_, fr_, integrator->localTopology_,
-                integrator->shellfc_, integrator->upd_,
+                integrator->shellfc_,
                 computeGlobalsElement->getCheckNOfBondedInteractionsCallback());
     neighborSearchSignaller->registerCallback(domDecElement->getNSCallback());
 
@@ -610,7 +608,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
 
         auto updatePosition = std::make_unique<UpdatePosition>(
                     inputrec_->delta_t, microState,
-                    inputrec_->opts.nFreeze, mdAtoms_->mdatoms(), integrator->upd_);
+                    inputrec_->opts.nFreeze, mdAtoms_->mdatoms());
         updateStepBuilder2.addUpdateElement(std::move(updatePosition));
 
         updateStep2 = updateStepBuilder2.build(mdAtoms_->mdatoms(), wcycle_);
@@ -623,8 +621,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
         UpdateStepBuilder updateStepBuilder2;
         auto              updateLeapFrog = std::make_unique<UpdateLeapfrog>(
                     inputrec_->delta_t, stepManager->getStepAccessor(), microState,
-                    inputrec_, mdAtoms_->mdatoms(), integrator->eKinData_.get(),
-                    integrator->upd_);
+                    inputrec_, mdAtoms_->mdatoms(), integrator->eKinData_.get());
         updateStepBuilder2.addUpdateElement(std::move(updateLeapFrog));
 
         updateStep2 = updateStepBuilder2.build(mdAtoms_->mdatoms(), wcycle_);
@@ -636,8 +633,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
 
     auto constrainCoordinates = std::make_unique<ConstrainCoordinates>(
                 stepManager->getStepAccessor(), microState,
-                mdAtoms_->mdatoms(), integrator->upd_,
-                integrator->shake_vir_, constr_, fplog_, inputrec_);
+                mdAtoms_->mdatoms(), integrator->shake_vir_, constr_, fplog_, inputrec_);
     logSignaller->registerCallback(constrainCoordinates->getLoggingCallback());
     energySignaller->registerCallback(
             constrainCoordinates->getCalculateEnergyCallback(),
@@ -660,8 +656,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     }
 
     auto finishUpdate = std::make_unique<FinishUpdateElement>(
-                microState, mdAtoms_->mdatoms(), integrator->upd_,
-                inputrec_, wcycle_, constr_);
+                microState, mdAtoms_->mdatoms(), inputrec_, wcycle_, constr_);
 
     /*
      * Pre and post loop elements

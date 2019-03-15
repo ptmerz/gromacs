@@ -2117,12 +2117,11 @@ UpdateRunFunctionTypePtr UpdateVelocity::registerUpdateRun()
 
 UpdatePosition::UpdatePosition(
         real timestep, std::shared_ptr<MicroState> &microState,
-        const ivec *nFreezeGroups, const t_mdatoms *mdatoms, Update *upd) :
+        const ivec *nFreezeGroups, const t_mdatoms *mdatoms) :
     timestep_(timestep),
     microState_(microState),
     mdatoms_(mdatoms),
-    nFreezeGroups_(nFreezeGroups),
-    upd_(upd)
+    nFreezeGroups_(nFreezeGroups)
 {}
 
 void UpdatePosition::runPartial(int start, int nrend)
@@ -2131,8 +2130,8 @@ void UpdatePosition::runPartial(int start, int nrend)
     const bool bExtended = false;
     const real veta      = 0.0;
 
-    const auto x      = as_rvec_array(microState_->readPosition().paddedArrayRef().data());
-    auto       xprime = upd_->xp()->rvec_array();
+    const auto x      = as_rvec_array(microState_->readPreviousPosition().paddedArrayRef().data());
+    auto       xprime = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
     const auto v      = as_rvec_array(microState_->readVelocity().paddedArrayRef().data());
 
     do_update_vv_pos(
@@ -2168,15 +2167,13 @@ UpdateRunFunctionTypePtr UpdatePosition::registerUpdateRun()
 
 UpdateLeapfrog::UpdateLeapfrog(
         real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
-        const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
-        Update *upd) :
+        const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind) :
     timestep_(timestep),
     stepAccessor_(std::move(stepAccessor)),
     microState_(microState),
     inputrec_(inputrec),
     mdatoms_(mdatoms),
-    ekind_(ekind),
-    upd_(upd)
+    ekind_(ekind)
 {
     GMX_ASSERT(stepAccessor_, "UpdateLeapfrog constructor: stepAccessor can not be nullptr");
 }
@@ -2186,8 +2183,8 @@ void UpdateLeapfrog::runPartial(int start, int nrend)
     const rvec  * M              = nullptr;
     const double *nosehoover_vxi = nullptr;
 
-    const auto    x   = as_rvec_array(microState_->readPosition().paddedArrayRef().data());
-    auto          xp  = upd_->xp()->rvec_array();
+    const auto    x   = as_rvec_array(microState_->readPreviousPosition().paddedArrayRef().data());
+    auto          xp  = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
     auto          v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
     const auto    f   = as_rvec_array(microState_->readForce().unpaddedArrayRef().data());
     const auto    box = microState_->getBox();
@@ -2226,11 +2223,10 @@ ElementFunctionTypePtr UpdateLeapfrog::registerTeardown()
 
 FinishUpdateElement::FinishUpdateElement(
         std::shared_ptr<MicroState> &microState,
-        const t_mdatoms *mdatoms, Update *upd,
-        const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr) :
+        const t_mdatoms *mdatoms, const t_inputrec *inputrec,
+        gmx_wallcycle *wcycle, Constraints *constr) :
     microState_(microState),
     mdatoms_(mdatoms),
-    upd_(upd),
     inputrec_(inputrec),
     wcycle_(wcycle),
     constr_(constr)
@@ -2242,8 +2238,8 @@ void FinishUpdateElement::run()
     t_nrnb        *nrnb  = nullptr;
     finish_update(
             inputrec_, mdatoms_,
-            microState_->writePosition().paddedArrayRef(), microState_->getBox(),
-            graph, nrnb, wcycle_, *upd_->xp(), constr_);
+            microState_->writePreviousPosition().paddedArrayRef(), microState_->getBox(),
+            graph, nrnb, wcycle_, microState_->writePosition().paddedArrayRef(), constr_);
 }
 
 ElementFunctionTypePtr FinishUpdateElement::registerSetup()

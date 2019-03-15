@@ -1001,7 +1001,7 @@ void ForceElement::run()
     auto currentStep = (*stepAccessor_)();
     auto currentTime = (*timeAccessor_)();
 
-    auto x          = microState_->writePosition();
+    auto x          = microState_->writePreviousPosition();
     auto forces     = microState_->writeForce();
     auto box        = microState_->getBox();
 

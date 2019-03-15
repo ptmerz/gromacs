@@ -1251,15 +1251,13 @@ bool inter_charge_group_settles(const gmx_mtop_t &mtop)
 
 ConstrainCoordinates::ConstrainCoordinates(
         StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
-        const t_mdatoms *mdatoms, Update *upd,
-        tensor shake_vir, Constraints *constr,
+        const t_mdatoms *mdatoms, tensor shake_vir, Constraints *constr,
         FILE *fplog, const t_inputrec *inputrec) :
     stepAccessor_(std::move(stepAccessor)),
     calculateVirialThisStep_(false),
     writeLogThisStep_(false),
     writeEnergyThisStep_(false),
     microState_(microState),
-    upd_(upd),
     shake_vir_(shake_vir),
     constr_(constr)
 {
@@ -1273,6 +1271,7 @@ ConstrainCoordinates::ConstrainCoordinates(
                 fplog, constr, inputrec, mdatoms,
                 microState->writePosition().paddedArrayRef(), microState->writeVelocity().paddedArrayRef(),
                 microState->getBox(), lambda, microState->localNumAtoms());
+        microState->copyPosition();
     }
 }
 
@@ -1284,7 +1283,8 @@ void ConstrainCoordinates::run()
 
     tensor vir_con;
 
-    auto   x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto   x   = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
+    auto   xp  = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
     auto   v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
     auto   box = microState_->getBox();
 
@@ -1294,7 +1294,7 @@ void ConstrainCoordinates::run()
     /* Constrain the coordinates upd->xp */
     constr_->apply(writeLogThisStep_, writeEnergyThisStep_,
                    step, 1, 1.0,
-                   x, upd_->xp()->rvec_array(), nullptr,
+                   x, xp, nullptr,
                    box,
                    lambda, &dvdl_constr,
                    v, calculateVirialThisStep_ ? &vir_con : nullptr, ConstraintVariable::Positions);
@@ -1392,7 +1392,7 @@ void ConstrainVelocities::run()
 
     // unfortunately, we need write access to the positions here (non-const rvec),
     // although we're constraining velocities
-    auto x   = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto x   = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
     auto v   = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
     auto box = microState_->getBox();
 

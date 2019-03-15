@@ -130,7 +130,6 @@ class SimpleIntegrator : public Integrator
             FILE                    *fplog,
             t_commrec               *cr,
             const MdrunOptions      &mdrunOptions,
-            BoxDeformation          *deform,
             t_inputrec              *inputrec,
             gmx_mtop_t              *top_global,
             t_nrnb                  *nrnb,
@@ -146,8 +145,6 @@ class SimpleIntegrator : public Integrator
         gmx_shellfc_t                  *shellfc_;
         //! Whether we're verbose
         bool                            do_verbose_;
-        //! Update
-        Update                         *upd_;
         //! Energy data structure
         gmx_enerdata_t                 *enerd_;
         //! Total dipole moment

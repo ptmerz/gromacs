@@ -736,7 +736,7 @@ void ComputeGlobalsElement::setup()
 
     bool bSumEkinhOld = false;
 
-    auto x      = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+    auto x      = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
     auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
     auto box    = microState_->getBox();
     real lambda = 0;
@@ -802,7 +802,7 @@ void ComputeGlobalsElement::run()
 
         bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
 
-        auto                x      = as_rvec_array(microState_->writePosition().paddedArrayRef().data());
+        auto                x      = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
         auto                v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
         auto                box    = microState_->getBox();
         real                lambda = 0;

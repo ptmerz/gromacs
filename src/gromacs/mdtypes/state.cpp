@@ -42,10 +42,12 @@
 #include <cstring>
 
 #include <algorithm>
+#include <gromacs/mdlib/update.h>
 
 #include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/math/veccompare.h"
+#include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdtypes/awh_history.h"
 #include "gromacs/mdtypes/df_history.h"
@@ -321,6 +323,8 @@ MicroState::MicroState(
         v_           = globalState->v;
         copy_mat(globalState->box, box_);
         flags_ = globalState->flags;
+        previousX_.resizeWithPadding(localNAtoms_);
+        copyPosition();
     }
 }
 
@@ -415,6 +419,16 @@ ArrayRefWithPadding<const RVec> MicroState::readPosition()
     return x_.constArrayRefWithPadding();
 }
 
+ArrayRefWithPadding<RVec> MicroState::writePreviousPosition()
+{
+    return previousX_.arrayRefWithPadding();
+}
+
+ArrayRefWithPadding<const RVec> MicroState::readPreviousPosition()
+{
+    return previousX_.constArrayRefWithPadding();
+}
+
 ArrayRefWithPadding<RVec> MicroState::writeVelocity()
 {
     return v_.arrayRefWithPadding();
@@ -451,9 +465,11 @@ void MicroState::setLocalState(std::unique_ptr<t_state> state)
 {
     localNAtoms_ = state->natoms;
     x_.resizeWithPadding(localNAtoms_);
+    previousX_.resizeWithPadding(localNAtoms_);
     v_.resizeWithPadding(localNAtoms_);
     x_ = state->x;
     v_ = state->v;
+    copyPosition();
     copy_mat(state->box, box_);
     flags_   = state->flags;
     ddpCount = state->ddp_count;
@@ -483,4 +499,25 @@ int MicroState::getFlags()
 {
     return flags_;
 }
+
+void MicroState::copyPosition()
+{
+    int nth = gmx_omp_nthreads_get(emntUpdate);
+#pragma omp parallel for num_threads(nth) schedule(static)
+    for (int th = 0; th < nth; th++)
+    {
+        int start_th, end_th;
+        UpdateStep::getThreadAtomRange(nth, th, localNAtoms_, &start_th, &end_th);
+        copyPosition(start_th, end_th);
+    }
+}
+
+void MicroState::copyPosition(int start, int end)
+{
+    for (int i = start; i < end; ++i)
+    {
+        previousX_[i] = x_[i];
+    }
+}
+
 }

@@ -3127,7 +3127,6 @@ DomDecElement::DomDecElement(
         t_forcerec                           *fr,
         gmx_localtop_t                       *localTopology,
         gmx_shellfc_t                        *shellfc,
-        Update                               *upd,
         CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback) :
     isNSStep_(false),
     isVerbose_(isVerbose),
@@ -3149,8 +3148,7 @@ DomDecElement::DomDecElement(
     wcycle_(wcycle),
     fr_(fr),
     localTopology_(localTopology),
-    shellfc_(shellfc),
-    upd_(upd)
+    shellfc_(shellfc)
 {
     init();
 }
@@ -3182,7 +3180,6 @@ void gmx::DomDecElement::init()
                             vsite, constr_,
                             nrnb_, wcycle, verbose);
         (*checkNOfBondedInteractionsCallback_)();
-        upd_->setNumAtoms(localState->natoms);
         microState_->setLocalState(std::move(localState));
     }
     else
@@ -3200,8 +3197,6 @@ void gmx::DomDecElement::init()
         /* Generate and initialize new topology */
         mdAlgorithmsSetupAtomData(cr_, inputrec_, *top_global_, localTopology_, fr_,
                                   &graph, mdAtoms_, constr_, vsite, shellfc_);
-
-        upd_->setNumAtoms(microState_->localNumAtoms());
     }
 }
 
@@ -3235,7 +3230,6 @@ void gmx::DomDecElement::run()
                         nrnb_, wcycle_,
                         doVerbose);  // was: do_verbose && !bPMETunePrinting
     (*checkNOfBondedInteractionsCallback_)();
-    upd_->setNumAtoms(localState->natoms);
     microState_->setLocalState(std::move(localState));
     isNSStep_    = false;
     isFirstStep_ = false;

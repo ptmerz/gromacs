@@ -296,8 +296,7 @@ class ConstrainCoordinates :
     public:
         ConstrainCoordinates(
             StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
-            const t_mdatoms *mdatoms, Update *upd,
-            tensor shake_vir, Constraints *constr,
+            const t_mdatoms *mdatoms, tensor shake_vir, Constraints *constr,
             FILE *fplog, const t_inputrec *inputrec);
 
         // IIntegratorElement functions
@@ -323,7 +322,6 @@ class ConstrainCoordinates :
 
 
         // TODO: Rethink access to these
-        Update      *upd_;
         rvec        *shake_vir_;
         Constraints *constr_;
 

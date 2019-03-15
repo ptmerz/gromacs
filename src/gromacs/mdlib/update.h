@@ -171,7 +171,7 @@ class UpdatePosition : public IUpdateElement
     public:
         UpdatePosition(
             real timestep, std::shared_ptr<MicroState> &microState,
-            const ivec *nFreezeGroups, const t_mdatoms *mdatoms, Update *upd);
+            const ivec *nFreezeGroups, const t_mdatoms *mdatoms);
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -187,7 +187,6 @@ class UpdatePosition : public IUpdateElement
         // TODO: Rethink access to these
         const t_mdatoms *mdatoms_;
         const ivec      *nFreezeGroups_;
-        Update          *upd_;
 
         // Run the update
         void runPartial(int start, int nrend);
@@ -199,8 +198,7 @@ class UpdateLeapfrog : public IUpdateElement
     public:
         UpdateLeapfrog(
             real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
-            const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind,
-            Update *upd);
+            const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind);
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -218,7 +216,6 @@ class UpdateLeapfrog : public IUpdateElement
         const t_inputrec         *inputrec_;
         const t_mdatoms          *mdatoms_;
         const gmx_ekindata_t     *ekind_;
-        Update                   *upd_;
 
         // Run the update
         void runPartial(int start, int nrend);
@@ -231,8 +228,8 @@ class FinishUpdateElement : public IIntegratorElement
     public:
         FinishUpdateElement(
             std::shared_ptr<MicroState> &microState,
-            const t_mdatoms *mdatoms, Update *upd,
-            const t_inputrec *inputrec, gmx_wallcycle *wcycle, Constraints *constr);
+            const t_mdatoms *mdatoms, const t_inputrec *inputrec,
+            gmx_wallcycle *wcycle, Constraints *constr);
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
@@ -244,7 +241,6 @@ class FinishUpdateElement : public IIntegratorElement
 
         // TODO: Rethink access to these
         const t_mdatoms  *mdatoms_;
-        Update           *upd_;
         const t_inputrec *inputrec_;
         gmx_wallcycle    *wcycle_;
         Constraints      *constr_;
