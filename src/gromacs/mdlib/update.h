@@ -380,7 +380,7 @@ void finish_update(const t_inputrec        *inputrec,
                    const t_graph           *graph,
                    t_nrnb                  *nrnb,
                    gmx_wallcycle_t          wcycle,
-                   gmx::Update             *upd,
+                   gmx::ArrayRef<gmx::RVec> xprime,
                    const gmx::Constraints  *constr);
 
 /* Return TRUE if OK, FALSE in case of Shake Error */

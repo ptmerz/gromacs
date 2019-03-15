@@ -1187,7 +1187,7 @@ void gmx::legacy::Integrator::do_md()
                               cr, nrnb, wcycle, &upd, constr, do_log, do_ene);
         finish_update(ir, mdatoms,
                       state->x, state->box, graph,
-                      nrnb, wcycle, &upd, constr);
+                      nrnb, wcycle, *upd.xp(), constr);
 
         if (ir->bPull && ir->pull->bSetPbcRefToPrevStepCOM)
         {
@@ -1223,7 +1223,7 @@ void gmx::legacy::Integrator::do_md()
              * For now, will call without actually constraining, constr=NULL*/
             finish_update(ir, mdatoms,
                           state->x, state->box, graph,
-                          nrnb, wcycle, &upd, nullptr);
+                          nrnb, wcycle, *upd.xp(), nullptr);
         }
         if (EI_VV(ir->eI))
         {

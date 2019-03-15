@@ -1609,7 +1609,7 @@ void finish_update(const t_inputrec        *inputrec, /* input record and box st
                    const t_graph           *graph,
                    t_nrnb                  *nrnb,
                    gmx_wallcycle_t          wcycle,
-                   Update                  *upd,
+                   gmx::ArrayRef<gmx::RVec> xprime,
                    const gmx::Constraints  *constr)
 {
     int homenr = md->homenr;
@@ -1643,7 +1643,7 @@ void finish_update(const t_inputrec        *inputrec, /* input record and box st
             }
             if (partialFreezeAndConstraints)
             {
-                auto xp = makeArrayRef(*upd->xp()).subArray(0, homenr);
+                auto xp = xprime.subArray(0, homenr);
                 auto x  = makeConstArrayRef(pos).subArray(0, homenr);
                 for (int i = 0; i < homenr; i++)
                 {
@@ -1662,7 +1662,7 @@ void finish_update(const t_inputrec        *inputrec, /* input record and box st
 
         if (graph && (graph->nnodes > 0))
         {
-            unshift_x(graph, box, as_rvec_array(pos.data()), upd->xp()->rvec_array());
+            unshift_x(graph, box, as_rvec_array(pos.data()), as_rvec_array(xprime.data()));
             if (TRICLINIC(box))
             {
                 inc_nrnb(nrnb, eNR_SHIFTX, 2*graph->nnodes);
@@ -1674,7 +1674,7 @@ void finish_update(const t_inputrec        *inputrec, /* input record and box st
         }
         else
         {
-            auto           xp = makeConstArrayRef(*upd->xp()).subArray(0, homenr);
+            auto           xp = makeConstArrayRef(xprime).subArray(0, homenr);
             auto           x  = pos.subArray(0, homenr);
 #ifndef __clang_analyzer__
             int gmx_unused nth = gmx_omp_nthreads_get(emntUpdate);
@@ -2243,7 +2243,7 @@ void FinishUpdateElement::run()
     finish_update(
             inputrec_, mdatoms_,
             microState_->writePosition().paddedArrayRef(), microState_->getBox(),
-            graph, nrnb, wcycle_, upd_, constr_);
+            graph, nrnb, wcycle_, *upd_->xp(), constr_);
 }
 
 ElementFunctionTypePtr FinishUpdateElement::registerSetup()
