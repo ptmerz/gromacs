@@ -1364,8 +1364,6 @@ ShellFCElement::ShellFCElement(
         bool                         isDynamicBox,
         bool                         isDomDec,
         bool                         isVerbose,
-        StepAccessorPtr              stepAccessor,
-        TimeAccessorPtr              timeAccessor,
         std::shared_ptr<MicroState> &microState,
         gmx_enerdata_t              *enerd,
         tensor                       force_vir,
@@ -1390,14 +1388,13 @@ ShellFCElement::ShellFCElement(
     calculateVirial_(false),
     calculateEnergy_(false),
     calculateFreeEnergy_(false),
+    lastStep_(-1),
     ddOpenBalanceRegion_(isDomDec ?
                          DdOpenBalanceRegionBeforeForceComputation::yes :
                          DdOpenBalanceRegionBeforeForceComputation::no),
     ddCloseBalanceRegion_(isDomDec ?
                           DdCloseBalanceRegionAfterForceComputation::yes :
                           DdCloseBalanceRegionAfterForceComputation::no),
-    stepAccessor_(std::move(stepAccessor)),
-    timeAccessor_(std::move(timeAccessor)),
     microState_(microState),
     enerd_(enerd),
     mu_tot_(mu_tot),
@@ -1426,7 +1423,7 @@ void ShellFCElement::setup()
                                   inputrec_->nstcalcenergy, DOMAINDECOMP(cr_));
 }
 
-void ShellFCElement::run()
+void ShellFCElement::run(long currentStep, real currentTime)
 {
     // Disabled functionality
     gmx_enfrot     *enforcedRotation = nullptr;
@@ -1441,9 +1438,6 @@ void ShellFCElement::run()
             (calculateEnergy_ ? GMX_FORCE_ENERGY : 0) |
             (calculateFreeEnergy_ ? GMX_FORCE_DHDL : 0) |
             (doNeighborSearch_ ? GMX_FORCE_NS : 0));
-
-    auto currentStep = (*stepAccessor_)();
-    auto currentTime = (*timeAccessor_)();
 
     clear_mat(force_vir_);
 
@@ -1466,12 +1460,13 @@ void ShellFCElement::run()
     calculateVirial_     = false;
     calculateEnergy_     = false;
     calculateFreeEnergy_ = false;
+
+    lastStep_ = currentStep;
 }
 
 void ShellFCElement::teardown()
 {
-    auto currentStep = (*stepAccessor_)();
-    done_shellfc(fplog_, shellfc_, currentStep - inputrec_->init_step);
+    done_shellfc(fplog_, shellfc_, lastStep_ - inputrec_->init_step);
 }
 
 ElementFunctionTypePtr ShellFCElement::registerSetup()
@@ -1481,10 +1476,10 @@ ElementFunctionTypePtr ShellFCElement::registerSetup()
     return nullptr;
 }
 
-ElementFunctionTypePtr ShellFCElement::registerRun()
+ElementFunctionTypePtr ShellFCElement::scheduleRun(long step, real time)
 {
     return std::make_unique<ElementFunctionType>(
-            std::bind(&ShellFCElement::run, this));
+            std::bind(&ShellFCElement::run, this, step, time));
 }
 
 ElementFunctionTypePtr ShellFCElement::registerTeardown()

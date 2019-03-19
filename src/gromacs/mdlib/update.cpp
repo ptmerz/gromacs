@@ -2032,7 +2032,7 @@ ElementFunctionTypePtr UpdateStep::registerSetup()
     return std::make_unique<ElementFunctionType>(
             std::bind(&UpdateStep::setup, this));
 }
-ElementFunctionTypePtr UpdateStep::registerRun()
+    ElementFunctionTypePtr UpdateStep::scheduleRun(long gmx_unused step, real gmx_unused time)
 {
     if (runFunctions_.empty())
     {
@@ -2166,17 +2166,14 @@ UpdateRunFunctionTypePtr UpdatePosition::registerUpdateRun()
 }
 
 UpdateLeapfrog::UpdateLeapfrog(
-        real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+        real timestep, std::shared_ptr<MicroState> &microState,
         const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind) :
     timestep_(timestep),
-    stepAccessor_(std::move(stepAccessor)),
     microState_(microState),
     inputrec_(inputrec),
     mdatoms_(mdatoms),
     ekind_(ekind)
-{
-    GMX_ASSERT(stepAccessor_, "UpdateLeapfrog constructor: stepAccessor can not be nullptr");
-}
+{}
 
 void UpdateLeapfrog::runPartial(int start, int nrend)
 {
@@ -2189,8 +2186,10 @@ void UpdateLeapfrog::runPartial(int start, int nrend)
     const auto    f   = as_rvec_array(microState_->readForce().unpaddedArrayRef().data());
     const auto    box = microState_->getBox();
 
+    long step = 0;  // step is only used for temperature / pressure coupling which is turned off
+
     do_update_md(
-            start, nrend, (*stepAccessor_)(), timestep_,
+            start, nrend, step, timestep_,
             inputrec_, mdatoms_, ekind_, box,
             x, xp, v, f,
             nosehoover_vxi, M);
@@ -2246,7 +2245,7 @@ ElementFunctionTypePtr FinishUpdateElement::registerSetup()
 {
     return nullptr;
 }
-ElementFunctionTypePtr FinishUpdateElement::registerRun()
+ElementFunctionTypePtr FinishUpdateElement::scheduleRun(long gmx_unused step, real gmx_unused time)
 {
     return std::make_unique<ElementFunctionType>(std::bind(
                                                          &FinishUpdateElement::run, this));
@@ -2278,14 +2277,10 @@ void ResetVForVV::setup()
 
 void ResetVForVV::run()
 {
-    if (firstStep_)
-    {
-        /* if it's the initial step, we performed this first step just to get the constraint virial */
-        auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
-        copy_rvecn(vbuf_, v, 0, microState_->localNumAtoms());
-        sfree(vbuf_);
-        firstStep_ = false;
-    }
+    /* if it's the initial step, we performed this first step just to get the constraint virial */
+    auto v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    copy_rvecn(vbuf_, v, 0, microState_->localNumAtoms());
+    sfree(vbuf_);
 }
 
 ElementFunctionTypePtr ResetVForVV::registerSetup()
@@ -2294,10 +2289,15 @@ ElementFunctionTypePtr ResetVForVV::registerSetup()
                                                          &ResetVForVV::setup, this));
 }
 
-ElementFunctionTypePtr ResetVForVV::registerRun()
+ElementFunctionTypePtr ResetVForVV::scheduleRun(long gmx_unused step, real gmx_unused time)
 {
-    return std::make_unique<ElementFunctionType>(std::bind(
-                                                         &ResetVForVV::run, this));
+    if (firstStep_)
+    {
+        firstStep_ = false;
+        return std::make_unique<ElementFunctionType>(
+                std::bind(&ResetVForVV::run, this));
+    }
+    return nullptr;
 }
 
 ElementFunctionTypePtr ResetVForVV::registerTeardown()

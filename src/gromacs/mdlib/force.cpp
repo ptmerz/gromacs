@@ -869,8 +869,7 @@ void reset_enerdata(gmx_enerdata_t *enerd)
 namespace gmx
 {
 
-NeighborSearchSignaller::NeighborSearchSignaller(StepAccessorPtr stepAccessor, int nstlist) :
-    stepAccessor_(std::move(stepAccessor)),
+NeighborSearchSignaller::NeighborSearchSignaller(int nstlist) :
     nstlist_(nstlist)
 {}
 
@@ -893,10 +892,8 @@ void NeighborSearchSignaller::setup()
 /* Queries the current step via the step accessor, and informs its clients
  * if a neighbor search is going to happen this step.
  */
-void NeighborSearchSignaller::run()
+void NeighborSearchSignaller::run(long step)
 {
-    auto step = (*stepAccessor_)();
-
     if (nstlist_ > 0  && step % nstlist_ == 0)
     {
         for (const auto &callback : callbacks_)
@@ -906,32 +903,9 @@ void NeighborSearchSignaller::run()
     }
 }
 
-ElementFunctionTypePtr NeighborSearchSignaller::registerSetup()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&NeighborSearchSignaller::setup, this));
-}
-
-ElementFunctionTypePtr NeighborSearchSignaller::registerRun()
-{
-    if (nstlist_ > 0)
-    {
-        return std::make_unique<ElementFunctionType>(
-                std::bind(&NeighborSearchSignaller::run, this));
-    }
-    return nullptr;
-}
-
-ElementFunctionTypePtr NeighborSearchSignaller::registerTeardown()
-{
-    return nullptr;
-}
-
 ForceElement::ForceElement(
         bool                         isDynamicBox,
         bool                         isDomDec,
-        StepAccessorPtr              stepAccessor,
-        TimeAccessorPtr              timeAccessor,
         std::shared_ptr<MicroState> &microState,
         gmx_enerdata_t              *enerd,
         tensor                       force_vir,
@@ -958,8 +932,6 @@ ForceElement::ForceElement(
     ddCloseBalanceRegion_(isDomDec ?
                           DdCloseBalanceRegionAfterForceComputation::yes :
                           DdCloseBalanceRegionAfterForceComputation::no),
-    stepAccessor_(std::move(stepAccessor)),
-    timeAccessor_(std::move(timeAccessor)),
     microState_(microState),
     enerd_(enerd),
     mu_tot_(mu_tot),
@@ -978,7 +950,9 @@ ForceElement::ForceElement(
     ppForceWorkload_(ppForceWorkload)
 {}
 
-void ForceElement::run()
+void ForceElement::run(
+        long currentStep, real currentTime,
+        bool calculateVirial, bool calculateEnergy, bool calculateFreeEnergy, bool doNeighborSearch)
 {
     // Disabled functionality
     Awh            *awh              = nullptr;
@@ -993,13 +967,10 @@ void ForceElement::run()
             GMX_FORCE_STATECHANGED |
             (isDynamicBox_ ? GMX_FORCE_DYNAMICBOX : 0) |
             GMX_FORCE_ALLFORCES |
-            (calculateVirial_ ? GMX_FORCE_VIRIAL : 0) |
-            (calculateEnergy_ ? GMX_FORCE_ENERGY : 0) |
-            (calculateFreeEnergy_ ? GMX_FORCE_DHDL : 0) |
-            (doNeighborSearch_ ? GMX_FORCE_NS : 0));
-
-    auto currentStep = (*stepAccessor_)();
-    auto currentTime = (*timeAccessor_)();
+            (calculateVirial ? GMX_FORCE_VIRIAL : 0) |
+            (calculateEnergy ? GMX_FORCE_ENERGY : 0) |
+            (calculateFreeEnergy ? GMX_FORCE_DHDL : 0) |
+            (doNeighborSearch ? GMX_FORCE_NS : 0));
 
     auto x          = microState_->writePreviousPosition();
     auto forces     = microState_->writeForce();
@@ -1018,11 +989,6 @@ void ForceElement::run()
              forces, force_vir_, mdatoms_, enerd_, fcd_, lambda, graph_,
              fr_, ppForceWorkload_, vsite, mu_tot_, currentTime, ed,
              flags, ddOpenBalanceRegion_, ddCloseBalanceRegion_);
-
-    doNeighborSearch_    = false;
-    calculateVirial_     = false;
-    calculateEnergy_     = false;
-    calculateFreeEnergy_ = false;
 }
 
 ElementFunctionTypePtr ForceElement::registerSetup()
@@ -1030,10 +996,18 @@ ElementFunctionTypePtr ForceElement::registerSetup()
     return nullptr;
 }
 
-ElementFunctionTypePtr ForceElement::registerRun()
+ElementFunctionTypePtr ForceElement::scheduleRun(long step, real time)
 {
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&ForceElement::run, this));
+    auto returnValue = std::make_unique<ElementFunctionType>(
+            std::bind(&ForceElement::run, this, step, time,
+                    calculateVirial_, calculateEnergy_, calculateFreeEnergy_, doNeighborSearch_));
+
+    doNeighborSearch_    = false;
+    calculateVirial_     = false;
+    calculateEnergy_     = false;
+    calculateFreeEnergy_ = false;
+
+    return returnValue;
 }
 
 ElementFunctionTypePtr ForceElement::registerTeardown()

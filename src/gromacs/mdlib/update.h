@@ -93,12 +93,12 @@ class Update
         PrivateImplPointer<Impl> impl_;
 };
 
-class UpdateStep : public IIntegratorElement
+class UpdateStep : public ISchedulerElement
 {
     public:
         // make this an element
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         static void getThreadAtomRange(
@@ -197,7 +197,7 @@ class UpdateLeapfrog : public IUpdateElement
 {
     public:
         UpdateLeapfrog(
-            real timestep, StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+            real timestep, std::shared_ptr<MicroState> &microState,
             const t_inputrec *inputrec, const t_mdatoms *mdatoms, const gmx_ekindata_t *ekind);
 
         // IUpdateElement functions
@@ -209,7 +209,6 @@ class UpdateLeapfrog : public IUpdateElement
 
     private:
         real                        timestep_;
-        StepAccessorPtr             stepAccessor_;
         std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these
@@ -223,7 +222,7 @@ class UpdateLeapfrog : public IUpdateElement
 };
 
 // This does mainly copy xp -> x - will be taken care of implicitly by new data model.
-class FinishUpdateElement : public IIntegratorElement
+class FinishUpdateElement : public ISchedulerElement
 {
     public:
         FinishUpdateElement(
@@ -233,7 +232,7 @@ class FinishUpdateElement : public IIntegratorElement
 
         // IUpdateElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
     private:
@@ -251,19 +250,18 @@ class FinishUpdateElement : public IIntegratorElement
 
 // This is something we should probablye get rid of by reshuffeling the elements
 // of VV in a smarter way... Needed for now to reproduce do_md().
-class ResetVForVV : public IIntegratorElement
+class ResetVForVV : public ISchedulerElement
 {
     public:
         explicit ResetVForVV(std::shared_ptr<MicroState> &microState);
 
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
     private:
         bool  firstStep_;
         rvec *vbuf_;
-
 
         std::shared_ptr<MicroState> microState_;
 

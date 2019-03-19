@@ -140,11 +140,10 @@ void compute_globals(FILE *fplog, gmx_global_stat *gstat, t_commrec *cr, t_input
 
 namespace gmx
 {
-class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignallerClient
+class ComputeGlobalsElement : public ISchedulerElement, public IEnergySignallerClient
 {
     public:
         ComputeGlobalsElement(
-            StepAccessorPtr              stepAccessor,
             std::shared_ptr<MicroState> &microState,
             gmx_enerdata_t              *enerd,
             tensor                       force_vir,
@@ -169,7 +168,7 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
         ~ComputeGlobalsElement() override;
 
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         void globalReductionNeeded();
@@ -183,7 +182,7 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
 
     private:
         void setup();
-        void run();
+        void run(bool needGlobalReduction, bool needEnergyReduction, bool needComReduction);
         void needToCheckNumberOfBondedInteractions();
 
         const bool doStopCM_;
@@ -206,7 +205,6 @@ class ComputeGlobalsElement : public IIntegratorElement, public IEnergySignaller
         gmx_global_stat            *gstat_;
         AccumulateGlobals           accumulateGlobals_;
 
-        StepAccessorPtr             stepAccessor_;
         std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these

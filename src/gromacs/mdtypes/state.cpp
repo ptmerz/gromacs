@@ -285,8 +285,6 @@ void preserve_box_shape(const t_inputrec *ir, matrix box_rel, matrix box)
 namespace gmx
 {
 MicroState::MicroState(
-        StepAccessorPtr           stepAccessor,
-        TimeAccessorPtr           timeAccessor,
         int                       natoms,
         FILE                     *fplog,
         const t_commrec          *cr,
@@ -300,8 +298,6 @@ MicroState::MicroState(
     nstvout_(nstvout),
     nstfout_(nstfout),
     nstxout_compressed_(nstxout_compressed),
-    stepAccessor_(std::move(stepAccessor)),
-    timeAccessor_(std::move(timeAccessor)),
     localNAtoms_(0),
     x_({}
        ),
@@ -328,11 +324,8 @@ MicroState::MicroState(
     }
 }
 
-void MicroState::write(gmx_mdoutf_t outf)
+void MicroState::write(gmx_mdoutf_t outf, long currentStep, real currentTime)
 {
-    auto currentStep = (*stepAccessor_)();
-    auto currentTime = (*timeAccessor_)();
-
     // Only used for CPT - turned off for now
     ObservablesHistory *observablesHistory = nullptr;
 
@@ -377,7 +370,7 @@ void MicroState::write(gmx_mdoutf_t outf)
     localStateBackup_.reset();
 }
 
-TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterSetup()
+TrajectoryWriterPrePostCallbackPtr MicroState::registerTrajectoryWriterSetup()
 {
     return nullptr;
 }
@@ -385,7 +378,7 @@ TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterSetup()
 TrajectoryWriterCallbackPtr MicroState::registerTrajectoryRun()
 {
     return std::make_unique<TrajectoryWriterCallback>(
-            std::bind(&MicroState::write, this, std::placeholders::_1));
+            std::bind(&MicroState::write, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 }
 
 TrajectoryWriterCallbackPtr MicroState::registerEnergyRun()
@@ -393,15 +386,9 @@ TrajectoryWriterCallbackPtr MicroState::registerEnergyRun()
     return nullptr;
 }
 
-TrajectoryWriterCallbackPtr MicroState::registerTrajectoryWriterTeardown()
+TrajectoryWriterPrePostCallbackPtr MicroState::registerTrajectoryWriterTeardown()
 {
     return nullptr;
-}
-
-TrajectorySignallerCallbackPtr MicroState::getTrajectorySignallerCallback()
-{
-    return std::make_unique<TrajectorySignallerCallback>(
-            std::bind(&MicroState::writeTrajectoryThisStep, this));
 }
 
 void MicroState::writeTrajectoryThisStep()

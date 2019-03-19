@@ -198,18 +198,20 @@ void print_ebin_header(FILE *log, int64_t steps, double time);
  *   - energy writing step
  *   - free energy calculation step
  */
-class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClient, public ILastStepClient
+class EnergySignaller : public ISignallerElement, public ILoggingSignallerClient, public ILastStepClient
 {
     public:
         //! Constructor
         EnergySignaller(
-            StepAccessorPtr stepAccessor,
             int             nstcalcenergy,
             int             nstenergy);
 
-        //! IIntegratorElement functions
+        //! ISignallerElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        /*! Queries the current step via the step accessor, and informs its clients
+         * if this is a special step.
+         */
+        void run(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         //! Allows clients to register callback for the different events
@@ -226,7 +228,6 @@ class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClien
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        StepAccessorPtr stepAccessor_;
         bool            isLastStep_;
         bool            isLoggingStep_;
 
@@ -237,22 +238,15 @@ class EnergySignaller : public IIntegratorElement, public ILoggingSignallerClien
         std::vector<EnergySignallerCallbackPtr> calculateVirialCallbacks_;
         std::vector<EnergySignallerCallbackPtr> writeEnergyCallbacks_;
         std::vector<EnergySignallerCallbackPtr> calculateFreeEnergyCallbacks_;
-
-        /*! Queries the current step via the step accessor, and informs its clients
-         * if this is a special step.
-         */
-        void run();
 };
 
 class EnergyElement :
-    public IIntegratorElement, public ITrajectoryWriterClient,
+    public ISchedulerElement, public ITrajectoryWriterClient,
     public IEnergySignallerClient, public ILoggingSignallerClient,
     public ILastStepClient
 {
     public:
         EnergyElement(
-            StepAccessorPtr              stepAccessor,
-            TimeAccessorPtr              timeAccessor,
             std::shared_ptr<MicroState> &microState,
             gmx_mtop_t                  *mtop,
             t_inputrec                  *ir,
@@ -271,14 +265,14 @@ class EnergyElement :
 
         // IIntegratorElement
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         // ITrajectoryWriterClient
-        TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup() override;
+        TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterSetup() override;
         TrajectoryWriterCallbackPtr registerTrajectoryRun() override;
         TrajectoryWriterCallbackPtr registerEnergyRun() override;
-        TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() override;
+        TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterTeardown() override;
 
         //IEnergySignallerClient
         EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
@@ -300,14 +294,11 @@ class EnergyElement :
         bool                        writeLog_;
         bool                        isLastStep_;
 
-        StepAccessorPtr             stepAccessor_;
-        TimeAccessorPtr             timeAccessor_;
-
         std::shared_ptr<MicroState> microState_;
 
-        void step();
+        void step(real time, bool isFreeEnergyCalculationStep, bool isEnergyCalculationStep);
         void setup(gmx_mdoutf *outf);
-        void write(gmx_mdoutf *outf, bool isTeardown = false);
+        void write(gmx_mdoutf *outf, long step, real time, bool isTeardown = false);
 
         //! Contains user input mdp options.
         t_inputrec       *inputrec_;

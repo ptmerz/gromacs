@@ -1739,10 +1739,8 @@ void EnergyOutput::restoreFromEnergyHistory(const energyhistory_t &enerhist)
 }
 
 EnergySignaller::EnergySignaller(
-        StepAccessorPtr stepAccessor,
         int             nstcalcenergy,
         int             nstenergy) :
-    stepAccessor_(std::move(stepAccessor)),
     isLastStep_(false),
     isLoggingStep_(false),
     nstcalcenergy_(nstcalcenergy),
@@ -1752,12 +1750,6 @@ EnergySignaller::EnergySignaller(
 ElementFunctionTypePtr EnergySignaller::registerSetup()
 {
     return nullptr;
-}
-
-ElementFunctionTypePtr EnergySignaller::registerRun()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&EnergySignaller::run, this));
 }
 
 ElementFunctionTypePtr EnergySignaller::registerTeardown()
@@ -1792,10 +1784,8 @@ void EnergySignaller::registerCallback(
 /*! Queries the current step via the step accessor, and informs its clients
  * if this is a special step.
  */
-void EnergySignaller::run()
+void EnergySignaller::run(long step, real gmx_unused time)
 {
-    auto step = (*stepAccessor_)();
-
     bool calculateEnergy     = do_per_step(step, nstcalcenergy_);
     bool calculateFreeEnergy = false;
     bool writeEnergy         = do_per_step(step, nstenergy_) || isLastStep_;
@@ -1842,8 +1832,6 @@ LoggingSignallerCallbackPtr EnergySignaller::getLoggingCallback()
 }
 
 EnergyElement::EnergyElement(
-        StepAccessorPtr              stepAccessor,
-        TimeAccessorPtr              timeAccessor,
         std::shared_ptr<MicroState> &microState,
         gmx_mtop_t                  *mtop,
         t_inputrec                  *ir,
@@ -1865,8 +1853,6 @@ EnergyElement::EnergyElement(
     isFreeEnergyCalculationStep_(false),
     writeLog_(false),
     isLastStep_(false),
-    stepAccessor_(std::move(stepAccessor)),
-    timeAccessor_(std::move(timeAccessor)),
     microState_(microState),
     inputrec_(ir),
     top_global_(mtop),
@@ -1911,31 +1897,24 @@ void EnergyElement::setup(gmx_mdoutf *outf)
     }
 }
 
-void EnergyElement::step()
+void EnergyElement::step(real time, bool isFreeEnergyCalculationStep, bool isEnergyCalculationStep)
 {
-    if (isEnergyCalculationStep_ || writeEnergy_)
-    {
-        // All the state is used for is turned off for now (free energy, temperature / pressure coupling)
-        t_state *localState = nullptr;
-        enerd_->term[F_ETOT] = enerd_->term[F_EPOT] + enerd_->term[F_EKIN];
-        energyOutput_.addDataAtEnergyStep(
-                isFreeEnergyCalculationStep_, isEnergyCalculationStep_,
-                (*timeAccessor_)(), mdAtoms_->mdatoms()->tmass, enerd_, localState,
-                inputrec_->fepvals, inputrec_->expandedvals,
-                microState_->getBox(),  // TODO: was lastbox - might be a problem when box changes!
-                shake_vir_, force_vir_, total_vir_, pres_,
-                ekind_, mu_tot_, constr_);
-    }
-    else
-    {
-        energyOutput_.recordNonEnergyStep();
-    }
+    // All the state is used for is turned off for now (free energy, temperature / pressure coupling)
+    t_state *localState = nullptr;
+    enerd_->term[F_ETOT] = enerd_->term[F_EPOT] + enerd_->term[F_EKIN];
+    energyOutput_.addDataAtEnergyStep(
+            isFreeEnergyCalculationStep, isEnergyCalculationStep,
+            time, mdAtoms_->mdatoms()->tmass, enerd_, localState,
+            inputrec_->fepvals, inputrec_->expandedvals,
+            microState_->getBox(),  // TODO: was lastbox - might be a problem when box changes!
+            shake_vir_, force_vir_, total_vir_, pres_,
+            ekind_, mu_tot_, constr_);
 }
 
-void EnergyElement::write(gmx_mdoutf *outf, bool isTeardown)
+void EnergyElement::write(gmx_mdoutf *outf, long step, real time, bool isTeardown)
 {
-    auto step = (*stepAccessor_)();
-
+    // This writes energy and log - should maybe be separated?
+    // For now, write log when writing energy
     if (!isTeardown)
     {
         bool do_dr  = do_per_step(step, inputrec_->nstdisreout);
@@ -1943,9 +1922,9 @@ void EnergyElement::write(gmx_mdoutf *outf, bool isTeardown)
 
         Awh *awh = nullptr;
         energyOutput_.printStepToEnergyFile(
-                mdoutf_get_fp_ene(outf), writeEnergy_, do_dr, do_or,
-                writeLog_ || isLastStep_ ? fplog_ : nullptr,
-                step, (*timeAccessor_)(),
+                mdoutf_get_fp_ene(outf), true, do_dr, do_or,
+                fplog_,
+                step, time,
                 eprNORMAL, fcd_, groups_, &(inputrec_->opts), awh);
     }
     else
@@ -1953,13 +1932,9 @@ void EnergyElement::write(gmx_mdoutf *outf, bool isTeardown)
         Awh *awh = nullptr;
         energyOutput_.printStepToEnergyFile(
                 mdoutf_get_fp_ene(outf), false, false, false,
-                fplog_, step, (*timeAccessor_)(),
+                fplog_, step, time,
                 eprAVER, fcd_, groups_, &(inputrec_->opts), awh);
     }
-    isEnergyCalculationStep_     = false;
-    writeEnergy_                 = false;
-    isFreeEnergyCalculationStep_ = false;
-    writeLog_                    = false;
 }
 
 ElementFunctionTypePtr EnergyElement::registerSetup()
@@ -1967,12 +1942,25 @@ ElementFunctionTypePtr EnergyElement::registerSetup()
     return nullptr;
 }
 
-ElementFunctionTypePtr EnergyElement::registerRun()
+ElementFunctionTypePtr EnergyElement::scheduleRun(long gmx_unused step, real time)
 {
     if (isMaster_)
     {
-        return std::make_unique<ElementFunctionType>(
-                std::bind(&EnergyElement::step, this));
+        ElementFunctionTypePtr returnValue;
+        if (isEnergyCalculationStep_ || writeEnergy_)
+        {
+            returnValue = std::make_unique<ElementFunctionType>(
+                    std::bind(&EnergyElement::step, this, time, isFreeEnergyCalculationStep_, isEnergyCalculationStep_));
+        }
+        else
+        {
+            returnValue = std::make_unique<ElementFunctionType>(
+                    [this](){this->energyOutput_.recordNonEnergyStep(); });
+        }
+        isEnergyCalculationStep_ = false;
+        isFreeEnergyCalculationStep_ = false;
+        writeEnergy_ = false;
+        return returnValue;
     }
     return nullptr;
 }
@@ -1982,9 +1970,9 @@ ElementFunctionTypePtr EnergyElement::registerTeardown()
     return nullptr;
 }
 
-TrajectoryWriterCallbackPtr EnergyElement::registerTrajectoryWriterSetup()
+TrajectoryWriterPrePostCallbackPtr EnergyElement::registerTrajectoryWriterSetup()
 {
-    return std::make_unique<TrajectoryWriterCallback>(
+    return std::make_unique<TrajectoryWriterPrePostCallback>(
             std::bind(&EnergyElement::setup, this, std::placeholders::_1));
 }
 
@@ -1998,17 +1986,18 @@ TrajectoryWriterCallbackPtr EnergyElement::registerEnergyRun()
     if (isMaster_)
     {
         return std::make_unique<TrajectoryWriterCallback>(
-                std::bind(&EnergyElement::write, this, std::placeholders::_1, false));
+                std::bind(&EnergyElement::write, this, std::placeholders::_1,
+                        std::placeholders::_2, std::placeholders::_3, false));
     }
     return nullptr;
 }
 
-TrajectoryWriterCallbackPtr EnergyElement::registerTrajectoryWriterTeardown()
+TrajectoryWriterPrePostCallbackPtr EnergyElement::registerTrajectoryWriterTeardown()
 {
     if (inputrec_->nstcalcenergy > 0 && isMaster_)
     {
-        return std::make_unique<TrajectoryWriterCallback>(
-                std::bind(&EnergyElement::write, this, std::placeholders::_1, true));
+        return std::make_unique<TrajectoryWriterPrePostCallback>(
+                std::bind(&EnergyElement::write, this, std::placeholders::_1, 0, 0, true));
     }
     return nullptr;
 }

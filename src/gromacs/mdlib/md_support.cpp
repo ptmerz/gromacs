@@ -642,7 +642,6 @@ void set_state_entries(t_state *state, const t_inputrec *ir)
 namespace gmx
 {
 ComputeGlobalsElement::ComputeGlobalsElement(
-        StepAccessorPtr              stepAccessor,
         std::shared_ptr<MicroState> &microState,
         gmx_enerdata_t              *enerd,
         tensor                       force_vir,
@@ -672,7 +671,6 @@ ComputeGlobalsElement::ComputeGlobalsElement(
     isLF_(EI_MD(inputrec->eI) && !EI_VV(inputrec->eI)),
     totalNumberOfBondedInteractions_(0),
     shouldCheckNumberOfBondedInteractions_(false),
-    stepAccessor_(std::move(stepAccessor)),
     microState_(microState),
     fplog_(fplog),
     mdlog_(mdlog),
@@ -710,10 +708,32 @@ ElementFunctionTypePtr ComputeGlobalsElement::registerSetup()
             std::bind(&ComputeGlobalsElement::setup, this));
 }
 
-ElementFunctionTypePtr ComputeGlobalsElement::registerRun()
+ElementFunctionTypePtr ComputeGlobalsElement::scheduleRun(long step, real gmx_unused time)
 {
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&ComputeGlobalsElement::run, this));
+    bool needComReduction = doStopCM_ && do_per_step(step, nstcomm_);
+
+    needGlobalReduction_ = needGlobalReduction_ || needComReduction || do_per_step(step, nstglobalcomm_);
+
+    /* With Leap-Frog we can skip compute_globals at
+     * non-communication steps, but we need to calculate
+     * the kinetic energy one step before communication.
+     */
+    /* for vv, the first half of the integration actually corresponds to the previous step.
+       So we need information from the last step in the first half of the integration */
+
+    if (needGlobalReduction_ ||
+        (isLF_ && do_per_step(step+1, nstglobalcomm_)) ||
+        (isVV_ && do_per_step(step-1, nstglobalcomm_)))
+    {
+        auto returnValue = std::make_unique<ElementFunctionType>(
+                std::bind(&ComputeGlobalsElement::run, this,
+                        needGlobalReduction_, needEnergyReduction_, needComReduction));
+        needGlobalReduction_ = false;
+        needEnergyReduction_ = false;
+        return returnValue;
+    }
+
+    return nullptr;
 }
 
 ElementFunctionTypePtr ComputeGlobalsElement::registerTeardown()
@@ -768,82 +788,61 @@ void ComputeGlobalsElement::setup()
                                     &shouldCheckNumberOfBondedInteractions_);
 }
 
-void ComputeGlobalsElement::run()
+void ComputeGlobalsElement::run(bool needGlobalReduction, bool needEnergyReduction, bool needComReduction)
 {
+    // Since we're already communicating at this step, we
+    // can propagate intra-simulation signals. Note that
+    // check_nstglobalcomm has the responsibility for
+    // choosing the value of nstglobalcomm that is one way
+    // bGStat becomes true, so we can't get into a
+    // situation where e.g. checkpointing can't be
+    // signalled.
+    gmx_multisim_t     *ms               = nullptr;
+    bool                doInterSimSignal = false;
+    bool                doIntraSimSignal = true;
+    SimulationSignaller signaller(&signals_, cr_, ms, doInterSimSignal, doIntraSimSignal);
 
-    auto step = (*stepAccessor_)();
+    bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
 
-    bool needComReduction = doStopCM_ && do_per_step(step, nstcomm_);
+    auto                x      = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
+    auto                v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
+    auto                box    = microState_->getBox();
+    real                lambda = 0;
 
-    needGlobalReduction_ = needGlobalReduction_ || needComReduction || do_per_step(step, nstglobalcomm_);
+    int                 flags =
+        CGLO_TEMPERATURE |     // TODO: This used not to be done every time when doing vv - why?
+        CGLO_PRESSURE |        // TODO: This used not to be done every time when doing vv - why?
+        CGLO_CONSTRAINT;       // TODO: This used to be done in a second reduction with vv - check!
 
-    /* With Leap-Frog we can skip compute_globals at
-     * non-communication steps, but we need to calculate
-     * the kinetic energy one step before communication.
-     */
-    /* for vv, the first half of the integration actually corresponds to the previous step.
-       So we need information from the last step in the first half of the integration */
-
-    if (needGlobalReduction_ ||
-        (isLF_ && do_per_step(step+1, nstglobalcomm_)) ||
-        (isVV_ && do_per_step(step-1, nstglobalcomm_)))
+    if (needGlobalReduction)
     {
-        // Since we're already communicating at this step, we
-        // can propagate intra-simulation signals. Note that
-        // check_nstglobalcomm has the responsibility for
-        // choosing the value of nstglobalcomm that is one way
-        // bGStat becomes true, so we can't get into a
-        // situation where e.g. checkpointing can't be
-        // signalled.
-        gmx_multisim_t     *ms               = nullptr;
-        bool                doInterSimSignal = false;
-        bool                doIntraSimSignal = true;
-        SimulationSignaller signaller(&signals_, cr_, ms, doInterSimSignal, doIntraSimSignal);
-
-        bool                bSumEkinhOld = false; // Needed only for VV-AVEK, which we don't support for now
-
-        auto                x      = as_rvec_array(microState_->writePreviousPosition().paddedArrayRef().data());
-        auto                v      = as_rvec_array(microState_->writeVelocity().paddedArrayRef().data());
-        auto                box    = microState_->getBox();
-        real                lambda = 0;
-
-        int                 flags =
-            CGLO_TEMPERATURE |     // TODO: This used not to be done every time when doing vv - why?
-            CGLO_PRESSURE |        // TODO: This used not to be done every time when doing vv - why?
-            CGLO_CONSTRAINT;       // TODO: This used to be done in a second reduction with vv - check!
-
-        if (needGlobalReduction_)
-        {
-            flags |= CGLO_GSTAT;
-        }
-
-        if (needEnergyReduction_)
-        {
-            flags |= CGLO_ENERGY;
-        }
-
-        if (needComReduction)
-        {
-            flags |= CGLO_STOPCM;
-        }
-
-        compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_,
-                        x, v, box, lambda,
-                        mdatoms_, nrnb_, vcm_,
-                        wcycle_, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
-                        constr_, &signaller,
-                        box,  // TODO: was lastbox - might be a problem when box changes!
-                        &accumulateGlobals_,
-                        &totalNumberOfBondedInteractions_, &bSumEkinhOld,
-                        flags |
-                        (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
-                        );
-        checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
-                                        top_global_, top_, x, box,
-                                        &shouldCheckNumberOfBondedInteractions_);
-
-        needGlobalReduction_ = false;
+        flags |= CGLO_GSTAT;
     }
+
+    if (needEnergyReduction)
+    {
+        flags |= CGLO_ENERGY;
+    }
+
+    if (needComReduction)
+    {
+        flags |= CGLO_STOPCM;
+    }
+
+    compute_globals(fplog_, gstat_, cr_, inputrec_, fr_, ekind_,
+                    x, v, box, lambda,
+                    mdatoms_, nrnb_, vcm_,
+                    wcycle_, enerd_, force_vir_, shake_vir_, total_vir_, pres_, mu_tot_,
+                    constr_, &signaller,
+                    box,  // TODO: was lastbox - might be a problem when box changes!
+                    &accumulateGlobals_,
+                    &totalNumberOfBondedInteractions_, &bSumEkinhOld,
+                    flags |
+                    (shouldCheckNumberOfBondedInteractions_ ? CGLO_CHECK_NUMBER_OF_BONDED_INTERACTIONS : 0)
+                    );
+    checkNumberOfBondedInteractions(mdlog_, cr_, totalNumberOfBondedInteractions_,
+                                    top_global_, top_, x, box,
+                                    &shouldCheckNumberOfBondedInteractions_);
 }
 
 void ComputeGlobalsElement::needToCheckNumberOfBondedInteractions()

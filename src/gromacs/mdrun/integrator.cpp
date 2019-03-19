@@ -74,7 +74,7 @@
 namespace gmx
 {
 
-SimpleIntegrator::SimpleIntegrator(
+ScheduledIntegrator::ScheduledIntegrator(
         FILE                    *fplog,
         t_commrec               *cr,
         const MdrunOptions      &mdrunOptions,
@@ -83,10 +83,12 @@ SimpleIntegrator::SimpleIntegrator(
         t_nrnb                  *nrnb,
         Constraints             *constr,
         gmx_wallcycle           *wcycle,
-        gmx_walltime_accounting *walltime_accounting,
-        StepAccessorPtr          stepAccessor) :
+        gmx_walltime_accounting *walltime_accounting) :
     initStep_(inputrec->init_step),
-    stepAccessor_(std::move(stepAccessor)),
+    nstlist_(inputrec->nstlist),
+    nSteps_(inputrec->nsteps),
+    initialTime_(inputrec->init_t),
+    timeStep_(inputrec->delta_t),
     fplog_(fplog),
     cr_(cr),
     wcycle_(wcycle),
@@ -155,100 +157,88 @@ SimpleIntegrator::SimpleIntegrator(
     }
 }
 
-void SimpleIntegrator::setup(std::unique_ptr<gmx::IntegratorLoop> outerLoop,
-                             std::shared_ptr<gmx::MicroState>     microState)
+void ScheduledIntegrator::setup(
+        std::unique_ptr<NeighborSearchSignaller> nsSignaller,
+        std::unique_ptr<DomDecElement> domDecElement,
+        std::unique_ptr<LoopScheduler> innerloopScheduler,
+        std::shared_ptr<MicroState> &microState)
 {
-    outerLoop_  = std::move(outerLoop);
-    microState_ = std::move(microState);
+    nsSignaller_ = std::move(nsSignaller);
+    domDecElement_ = std::move(domDecElement);
+    innerloopScheduler_ = std::move(innerloopScheduler);
+    microState_ = microState;
 }
 
-void SimpleIntegrator::run()
+void ScheduledIntegrator::run()
 {
     walltime_accounting_start_time(walltime_accounting_);
     wallcycle_start(wcycle_, ewcRUN);
     print_start(fplog_, cr_, walltime_accounting_, "mdrun");
 
-    auto setup    = outerLoop_->registerSetup();
-    auto run      = outerLoop_->registerRun();
-    auto teardown = outerLoop_->registerTeardown();
+    auto commandQueue = std::queue<ElementFunctionTypePtr>();
 
-    // uncrustify wants these shifted by one space...
-     (*setup)();
-     (*run)();
-     (*teardown)();
+    nsSignaller_->setup();
+    innerloopScheduler_->setup();
+
+    long step = initStep_;
+    real time = initialTime_;
+    bool isLastStep = false;
+
+    while (!isLastStep)
+    {
+        nsSignaller_->run(step);
+        if (DOMAINDECOMP(cr_))
+        {
+            domDecElement_->run(step);
+        }
+
+        long innerSteps = nstlist_;
+        if (step + innerSteps >= initStep_ + nSteps_)
+        {
+            innerSteps = initStep_ + nSteps_ - step;
+            isLastStep = true;
+        }
+        innerloopScheduler_->buildQueue(commandQueue, step, innerSteps, time, timeStep_);
+        while (!commandQueue.empty())
+        {
+            (*commandQueue.front())();
+            commandQueue.pop();
+        }
+
+        step += innerSteps;
+        time = initialTime_ + step*timeStep_;
+    }
+
+    // Let everyone know that last step is starting
+    for (auto &callback : lastStepCallbacks_)
+    {
+        (*callback)();
+    }
+    // we could think about skipping that last NS & domdec step...
+    nsSignaller_->run(step);
+    if (DOMAINDECOMP(cr_))
+    {
+        domDecElement_->run(step);
+    }
+    innerloopScheduler_->buildQueue(commandQueue, step, 1, time, timeStep_);
+    while (!commandQueue.empty())
+    {
+        (*commandQueue.front())();
+        commandQueue.pop();
+    }
+
+    innerloopScheduler_->teardown();
 
     walltime_accounting_end_time(walltime_accounting_);
-    walltime_accounting_set_nsteps_done(walltime_accounting_, (*stepAccessor_)() - initStep_);
-}
-
-SimpleStepManager::SimpleStepManager(
-        real timestep, long nsteps, long step, real time) :
-    step_(step),
-    nsteps_(nsteps + step),
-    initialTime_(time),
-    time_(time),
-    timestep_(timestep)
-{}
-
-ElementFunctionTypePtr SimpleStepManager::registerSetup()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&SimpleStepManager::setup, this));
-}
-ElementFunctionTypePtr SimpleStepManager::registerRun()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&SimpleStepManager::increment, this));
-}
-ElementFunctionTypePtr SimpleStepManager::registerTeardown()
-{
-    return nullptr;
-}
-
-//! Returns a function pointer allowing to access the current step number
-StepAccessorPtr SimpleStepManager::getStepAccessor() const
-{
-    return std::make_unique<StepAccessor>(
-            [this](){return this->step_; });
-}
-//! Returns a function pointer allowing to access the current time
-TimeAccessorPtr SimpleStepManager::getTimeAccessor() const
-{
-    return std::make_unique<TimeAccessor>(
-            [this](){return this->time_; });
+    walltime_accounting_set_nsteps_done(walltime_accounting_, step - initStep_);
 }
 
 //! Allows clients to register a last-step callback
-void SimpleStepManager::registerLastStepCallback(gmx::LastStepCallbackPtr callback)
+void ScheduledIntegrator::registerLastStepCallback(gmx::LastStepCallbackPtr callback)
 {
     if (callback)
     {
         lastStepCallbacks_.emplace_back(std::move(callback));
-    }
-}
-
-//! Increments the step and time, needs to be called every step
-void SimpleStepManager::increment()
-{
-    ++step_;
-    time_ = initialTime_ + step_*timestep_;
-    if (step_ == nsteps_)
-    {
-        for (auto &callback : lastStepCallbacks_)
-        {
-            (*callback)();
-        }
-    }
-}
-//! Called before the first step - notifies clients if first step is also last step
-void SimpleStepManager::setup()
-{
-    if (step_ == nsteps_)
-    {
-        for (auto &callback : lastStepCallbacks_)
-        {
-            (*callback)();
-        }
     }
 }
 
@@ -350,6 +340,92 @@ std::unique_ptr<IntegratorLoop> IntegratorLoopBuilder::build(long numSteps)
             new IntegratorLoop(std::move(elements_), numSteps));
 }
 
+LoopScheduler::LoopScheduler(
+        std::vector<std::unique_ptr<gmx::ISchedulerElement>> elements,
+        std::vector<std::unique_ptr<gmx::ISignallerElement>> signallers) :
+    elements_(std::move(elements)),
+    signallers_(std::move(signallers))
+{}
+
+void LoopScheduler::setup()
+{
+    // could / should be direct calls instead of register
+    for (auto &signaller : signallers_)
+    {
+        auto setup = signaller->registerSetup();
+        if (setup)
+        {
+            (*setup)();
+        }
+    }
+    for (auto &element : elements_)
+    {
+        auto setup = element->registerSetup();
+        if (setup)
+        {
+            (*setup)();
+        }
+    }
+}
+
+void LoopScheduler::teardown()
+{
+    // could / should be direct calls instead of register
+    for (auto &signaller : signallers_)
+    {
+        auto teardown = signaller->registerTeardown();
+        if (teardown)
+        {
+            (*teardown)();
+        }
+    }
+    for (auto &element : elements_)
+    {
+        auto teardown = element->registerTeardown();
+        if (teardown)
+        {
+            (*teardown)();
+        }
+    }
+}
+
+void LoopScheduler::buildQueue(
+        std::queue<gmx::ElementFunctionTypePtr> &queue,
+        const long firstStep, const long numSteps,
+        const real startTime, const real timeStep)
+{
+    for(long step = firstStep; step < firstStep + numSteps; ++step)
+    {
+        auto time = startTime + timeStep*(step - firstStep);
+        for (auto &signaller : signallers_)
+        {
+            signaller->run(step, time);
+        }
+        for (auto &element : elements_)
+        {
+            auto run = element->scheduleRun(step, time);
+            if (run)  // only add run if it's not nullptr
+            {
+                queue.push(std::move(run));
+            }
+        }
+    }
+}
+
+void LoopSchedulerBuilder::addElement(std::unique_ptr<ISchedulerElement> element)
+{
+    elements_.emplace_back(std::move(element));
+}
+void LoopSchedulerBuilder::addSignaller(std::unique_ptr<ISignallerElement> signaller)
+{
+    signallers_.emplace_back(std::move(signaller));
+}
+std::unique_ptr<LoopScheduler> LoopSchedulerBuilder::build()
+{
+    return std::unique_ptr<LoopScheduler>(
+            new LoopScheduler(std::move(elements_), std::move(signallers_)));
+}
+
 IntegratorBuilder::IntegratorBuilder(
         FILE                               *fplog,
         t_commrec                          *cr,
@@ -427,22 +503,15 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     }
 
     /*
-     * Build step manager
-     */
-    auto stepManager = std::make_unique<SimpleStepManager>(
-                inputrec_->delta_t, inputrec_->nsteps, inputrec_->init_step, inputrec_->init_t);
-
-    /*
      * Instantiate integrator
      */
-    auto integrator = std::unique_ptr<SimpleIntegrator>(
-                new SimpleIntegrator(
+    auto integrator = std::unique_ptr<ScheduledIntegrator>(
+                new ScheduledIntegrator(
                         fplog_, cr_, mdrunOptions_, inputrec_,
                         top_global_, nrnb_, constr_,
-                        wcycle_, walltime_accounting_, stepManager->getStepAccessor()));
+                        wcycle_, walltime_accounting_));
 
     auto microState = std::make_shared<MicroState>(
-                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
                 top_global_->natoms, fplog_, cr_, state_global_,
                 inputrec_->nstxout, inputrec_->nstvout, inputrec_->nstfout, inputrec_->nstxout_compressed);
 
@@ -450,35 +519,33 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
      * Build neighbor search signaller
      */
     auto neighborSearchSignaller = std::make_unique<NeighborSearchSignaller>(
-                stepManager->getStepAccessor(), inputrec_->nstlist);
+                inputrec_->nstlist);
 
     /*
      * Build logging signaller
      */
     auto logSignaller = std::make_unique<LoggingSignaller>(
-                stepManager->getStepAccessor(), inputrec_->nstlog);
-    stepManager->registerLastStepCallback(logSignaller->getLastStepCallback());
+                inputrec_->nstlog);
+    integrator->registerLastStepCallback(logSignaller->getLastStepCallback());
 
     /*
      * Build energy signaller
      */
     auto energySignaller = std::make_unique<EnergySignaller>(
-                stepManager->getStepAccessor(),
                 inputrec_->nstcalcenergy, inputrec_->nstenergy);
-    stepManager->registerLastStepCallback(energySignaller->getLastStepCallback());
+    integrator->registerLastStepCallback(energySignaller->getLastStepCallback());
 
     /*
      * Build trajectory signaller
      */
     auto trajectorySignaller = std::make_unique<TrajectorySignaller>(
-                stepManager->getStepAccessor(),
                 inputrec_->nstxout, inputrec_->nstvout, inputrec_->nstfout, inputrec_->nstxout_compressed);
 
     /*
      * Build compute globals element
      */
     auto computeGlobalsElement = std::make_unique<ComputeGlobalsElement>(
-                stepManager->getStepAccessor(), microState, integrator->enerd_,
+                microState, integrator->enerd_,
                 integrator->force_vir_, integrator->shake_vir_, integrator->total_vir_,
                 integrator->pres_, integrator->mu_tot_, fplog_, mdlog_, cr_, inputrec_,
                 mdAtoms_->mdatoms(), nrnb_, fr_, wcycle_, top_global_, integrator->localTopology_,
@@ -495,7 +562,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     const int nstglobalcomm = check_nstglobalcomm(
                 mdlog_, mdrunOptions_.globalCommunicationInterval, inputrec_, cr_);
     auto      domDecElement = std::make_unique<DomDecElement>(
-                nstglobalcomm, stepManager->getStepAccessor(),
+                nstglobalcomm,
                 mdrunOptions_.verbose, mdrunOptions_.verboseStepPrintInterval,
                 microState, fplog_, cr_, mdlog_, constr_, inputrec_, top_global_,
                 mdAtoms_, nrnb_, wcycle_, fr_, integrator->localTopology_,
@@ -506,12 +573,20 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     /*
      * Trajectory / Energy
      */
+    auto trajectorySaver = std::make_unique<TrajectorySaver>(microState);
+    trajectorySignaller->registerCallback(trajectorySaver->getTrajectorySignallerCallback());
+
     auto trajectoryWriter = std::make_unique<TrajectoryWriter>(
                 fplog_, nfile_, fnm_, mdrunOptions_, cr_, outputProvider_,
                 inputrec_, top_global_, oenv_, wcycle_);
+    trajectorySignaller->registerCallback(trajectoryWriter->getTrajectorySignallerCallback());
+    energySignaller->registerCallback(
+            trajectoryWriter->getCalculateEnergyCallback(),
+            trajectoryWriter->getCalculateVirialCallback(),
+            trajectoryWriter->getWriteEnergyCallback(),
+            trajectoryWriter->getCalculateFreeEnergyCallback());
 
     auto energyElement = std::make_unique<EnergyElement>(
-                stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
                 microState, top_global_, inputrec_, mdAtoms_,
                 integrator->enerd_, integrator->force_vir_, integrator->shake_vir_,
                 integrator->total_vir_, integrator->pres_,
@@ -522,7 +597,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
             energyElement->registerTrajectoryRun(),
             energyElement->registerEnergyRun(),
             energyElement->registerTrajectoryWriterTeardown());
-    stepManager->registerLastStepCallback(energyElement->getLastStepCallback());
+    integrator->registerLastStepCallback(energyElement->getLastStepCallback());
     energySignaller->registerCallback(
             energyElement->getCalculateEnergyCallback(),
             energyElement->getCalculateVirialCallback(),
@@ -536,15 +611,13 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
             microState->registerTrajectoryRun(),
             microState->registerEnergyRun(),
             microState->registerTrajectoryWriterTeardown());
-    trajectorySignaller->registerCallback(microState->getTrajectorySignallerCallback());
 
-    std::unique_ptr<IIntegratorElement> forceElement;
+    std::unique_ptr<ISchedulerElement> forceElement;
 
     if (integrator->shellfc_)
     {
         auto fElement = std::make_unique<ShellFCElement>(
                     inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_), mdrunOptions_.verbose,
-                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
                     microState, integrator->enerd_, integrator->force_vir_, integrator->mu_tot_,
                     fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
                     fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups,
@@ -565,7 +638,6 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     {
         auto fElement = std::make_unique<ForceElement>(
                     inputrecDynamicBox(inputrec_), DOMAINDECOMP(cr_),
-                    stepManager->getStepAccessor(), stepManager->getTimeAccessor(),
                     microState, integrator->enerd_, integrator->force_vir_, integrator->mu_tot_,
                     fplog_, cr_, inputrec_, mdAtoms_->mdatoms(), nrnb_,
                     fr_, fcd_, wcycle_, integrator->localTopology_, &top_global_->groups, ppForceWorkload_);
@@ -620,7 +692,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
 
         UpdateStepBuilder updateStepBuilder2;
         auto              updateLeapFrog = std::make_unique<UpdateLeapfrog>(
-                    inputrec_->delta_t, stepManager->getStepAccessor(), microState,
+                    inputrec_->delta_t, microState,
                     inputrec_, mdAtoms_->mdatoms(), integrator->eKinData_.get());
         updateStepBuilder2.addUpdateElement(std::move(updateLeapFrog));
 
@@ -632,7 +704,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     }
 
     auto constrainCoordinates = std::make_unique<ConstrainCoordinates>(
-                stepManager->getStepAccessor(), microState,
+                microState,
                 mdAtoms_->mdatoms(), integrator->shake_vir_, constr_, fplog_, inputrec_);
     logSignaller->registerCallback(constrainCoordinates->getLoggingCallback());
     energySignaller->registerCallback(
@@ -645,7 +717,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
     if (inputrec_->eI == eiVV)
     {
         constrainVelocities = std::make_unique<ConstrainVelocities>(
-                    stepManager->getStepAccessor(), microState,
+                    microState,
                     integrator->shake_vir_, constr_);
         logSignaller->registerCallback(constrainVelocities->getLoggingCallback());
         energySignaller->registerCallback(
@@ -663,20 +735,14 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
      */
     auto preLoopElement  = std::make_unique<PreLoopElement>(wcycle_);
     auto postLoopElement = std::make_unique<PostLoopElement>(
-                stepManager->getStepAccessor(),
                 mdrunOptions_.verbose, mdrunOptions_.verboseStepPrintInterval,
                 fplog_, inputrec_, cr_, walltime_accounting_, wcycle_);
 
-    // We want to move the stepManager into the loop, but we also need to register
-    // the loops to the step manager. We need to think how to solve that more elegantly -
-    // for now, let's keep a function object to use the registration function.
-    auto lastStepCallbackRegistration = std::bind(
-                &SimpleStepManager::registerLastStepCallback, stepManager.get(), std::placeholders::_1);
+    auto innerLoopBuilder = std::make_unique<LoopSchedulerBuilder>();
 
-    auto innerLoopBuilder = std::make_unique<IntegratorLoopBuilder>();
-
-    innerLoopBuilder->addElement(std::move(logSignaller));
-    innerLoopBuilder->addElement(std::move(energySignaller));
+    innerLoopBuilder->addSignaller(std::move(logSignaller));
+    innerLoopBuilder->addSignaller(std::move(energySignaller));
+    innerLoopBuilder->addSignaller(std::move(trajectorySignaller));
     innerLoopBuilder->addElement(std::move(preLoopElement));
 
     innerLoopBuilder->addElement(std::move(forceElement));
@@ -688,7 +754,7 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
         innerLoopBuilder->addElement(
                 std::make_unique<ResetVForVV>(microState));
     }
-    innerLoopBuilder->addElement(std::move(trajectorySignaller));
+    innerLoopBuilder->addElement(std::move(trajectorySaver));
     innerLoopBuilder->addElement(std::move(updateStep2));
     innerLoopBuilder->addElement(std::move(constrainCoordinates));
     innerLoopBuilder->addElement(std::move(finishUpdate));
@@ -700,21 +766,15 @@ std::unique_ptr<Integrator> IntegratorBuilder::build()
 
     innerLoopBuilder->addElement(std::move(energyElement));
     innerLoopBuilder->addElement(std::move(trajectoryWriter));
-
-    innerLoopBuilder->addElement(std::move(stepManager));
     innerLoopBuilder->addElement(std::move(postLoopElement));
 
-    auto innerLoop = innerLoopBuilder->build(inputrec_->nstlist);
-    lastStepCallbackRegistration(innerLoop->getLastStepCallback());
+    auto innerLoopScheduler = innerLoopBuilder->build();
 
-    auto outerLoopBuilder = std::make_unique<IntegratorLoopBuilder>();
-    outerLoopBuilder->addElement(std::move(neighborSearchSignaller));
-    outerLoopBuilder->addElement(std::move(domDecElement));
-    outerLoopBuilder->addElement(std::move(innerLoop));
-
-    auto outerLoop = outerLoopBuilder->build();
-    lastStepCallbackRegistration(outerLoop->getLastStepCallback());
-    integrator->setup(std::move(outerLoop), microState);
+    integrator->setup(
+            std::move(neighborSearchSignaller),
+            std::move(domDecElement),
+            std::move(innerLoopScheduler),
+            microState);
 
     return std::move(integrator);
 }
@@ -856,7 +916,8 @@ ElementFunctionTypePtr PreLoopElement::registerSetup()
     return nullptr;
 }
 
-ElementFunctionTypePtr PreLoopElement::registerRun()
+ElementFunctionTypePtr PreLoopElement::scheduleRun(
+        long gmx_unused step, real gmx_unused time)
 {
     return std::make_unique<ElementFunctionType>(
             std::bind(&PreLoopElement::run, this));
@@ -873,7 +934,6 @@ void PreLoopElement::run()
 }
 
 PostLoopElement::PostLoopElement(
-        StepAccessorPtr          stepAccessor,
         bool                     doVerbose,
         int                      verboseStepInterval,
         FILE                    *fplog,
@@ -888,7 +948,6 @@ PostLoopElement::PostLoopElement(
     isLoggingStep_(false),
     isFirstStep_(true),
     isLastStep_(false),
-    stepAccessor_(std::move(stepAccessor)),
     fplog_(fplog),
     inputrec_(inputrec),
     cr_(cr),
@@ -901,10 +960,10 @@ ElementFunctionTypePtr PostLoopElement::registerSetup()
     return nullptr;
 }
 
-ElementFunctionTypePtr PostLoopElement::registerRun()
+ElementFunctionTypePtr PostLoopElement::scheduleRun(long step, real gmx_unused time)
 {
     return std::make_unique<ElementFunctionType>(
-            std::bind(&PostLoopElement::run, this));
+            std::bind(&PostLoopElement::run, this, step));
 }
 
 ElementFunctionTypePtr PostLoopElement::registerTeardown()
@@ -912,7 +971,7 @@ ElementFunctionTypePtr PostLoopElement::registerTeardown()
     return nullptr;
 }
 
-void PostLoopElement::run()
+void PostLoopElement::run(long step)
 {
     auto cycles = wallcycle_stop(wcycle_, ewcSTEP);
     if (doDomainDecomposition_ && wcycle_)
@@ -922,7 +981,6 @@ void PostLoopElement::run()
 
     if (isMaster_)
     {
-        auto step = (*stepAccessor_)();
         if (isLoggingStep_)
         {
             if (fflush(fplog_) != 0)

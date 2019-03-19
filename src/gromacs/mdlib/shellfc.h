@@ -115,7 +115,7 @@ void done_shellfc(FILE *fplog, gmx_shellfc_t *shellfc, int64_t numSteps);
 namespace gmx
 {
 class ShellFCElement :
-    public IIntegratorElement,
+    public ISchedulerElement,
     public INeighborSearchSignallerClient,
     public IEnergySignallerClient
 {
@@ -125,8 +125,6 @@ class ShellFCElement :
             bool                         isDynamicBox,
             bool                         isDomDec,
             bool                         isVerbose,
-            StepAccessorPtr              stepAccessor,
-            TimeAccessorPtr              timeAccessor,
             std::shared_ptr<MicroState> &microState,
             gmx_enerdata_t              *enerd,
             tensor                       force_vir,
@@ -148,7 +146,7 @@ class ShellFCElement :
 
         //! IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         //! Register callback to get informed about neighbor searching step
@@ -167,17 +165,15 @@ class ShellFCElement :
         bool       calculateVirial_;
         bool       calculateEnergy_;
         bool       calculateFreeEnergy_;
+        long       lastStep_;
 
         const DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion_;
         const DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion_;
 
-        StepAccessorPtr                                 stepAccessor_;
-        TimeAccessorPtr                                 timeAccessor_;
-
         std::shared_ptr<MicroState>                     microState_;
 
         void setup();
-        void run();
+        void run(long step, real time);
         void teardown();
 
         // TODO: Rethink access to these

@@ -53,6 +53,7 @@ struct t_forcerec;
 namespace gmx
 {
 class EnergyOutput;
+class MicroState;
 }
 
 /*! \brief Wrapper routine for writing trajectories during mdrun
@@ -86,32 +87,45 @@ do_md_trajectory_writing(FILE                     *fplog,
 
 namespace gmx
 {
-class TrajectorySignaller : public IIntegratorElement
+class TrajectorySignaller : public ISignallerElement
 {
     public:
         explicit TrajectorySignaller(
-            StepAccessorPtr stepAccessor,
             int nstxout, int nstvout, int nstfout, int nstxout_compressed);
 
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        void run(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         void registerCallback(TrajectorySignallerCallbackPtr callback);
 
     private:
-        StepAccessorPtr stepAccessor_;
         const int       nstxout_;
         const int       nstvout_;
         const int       nstfout_;
         const int       nstxout_compressed_;
 
         std::vector<TrajectorySignallerCallbackPtr> callbacks_;
-
-        void run();
 };
 
-class TrajectoryWriter : public IIntegratorElement
+class TrajectorySaver : public ISchedulerElement, public ITrajectorySignallerClient
+{
+public:
+    explicit TrajectorySaver(std::shared_ptr<MicroState> &microState);
+
+    ElementFunctionTypePtr registerSetup() override;
+    ElementFunctionTypePtr scheduleRun(long step, real time) override;
+    ElementFunctionTypePtr registerTeardown() override;
+
+    TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() override;
+
+private:
+    bool isTrajectoryWritingStep_;
+    std::shared_ptr<MicroState> microState_;
+};
+
+class TrajectoryWriter :
+        public ISchedulerElement, public ITrajectorySignallerClient, public IEnergySignallerClient
 {
     public:
         TrajectoryWriter(
@@ -123,25 +137,35 @@ class TrajectoryWriter : public IIntegratorElement
             const gmx_output_env_t *oenv, gmx_wallcycle_t wcycle);
 
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
+        EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateVirialCallback() override;
+        EnergySignallerCallbackPtr getWriteEnergyCallback() override;
+        EnergySignallerCallbackPtr getCalculateFreeEnergyCallback() override;
+
+        TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() override;
+
         void registerClient(
-            TrajectoryWriterCallbackPtr setupCallback,
+            TrajectoryWriterPrePostCallbackPtr setupCallback,
             TrajectoryWriterCallbackPtr runTrajectoryCallback,
             TrajectoryWriterCallbackPtr runEnergyCallback,
-            TrajectoryWriterCallbackPtr teardownCallback);
+            TrajectoryWriterPrePostCallbackPtr teardownCallback);
 
     private:
-        std::vector<TrajectoryWriterCallbackPtr> setupCallbacks_;
+        bool writeEnergyThisStep_;
+        bool writeTrajectoryThisStep_;
+
+        std::vector<TrajectoryWriterPrePostCallbackPtr> setupCallbacks_;
         std::vector<TrajectoryWriterCallbackPtr> runTrajectoryCallbacks_;
         std::vector<TrajectoryWriterCallbackPtr> runEnergyCallbacks_;
-        std::vector<TrajectoryWriterCallbackPtr> teardownCallbacks_;
+        std::vector<TrajectoryWriterPrePostCallbackPtr> teardownCallbacks_;
 
         gmx_mdoutf *outf_;
 
         void setup();
-        void write();
+        void write(long step, real time, bool writeTrajectory, bool writeEnergy);
         void teardown();
 };
 }

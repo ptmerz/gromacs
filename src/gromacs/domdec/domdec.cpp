@@ -3089,29 +3089,9 @@ gmx_bool change_dd_cutoff(t_commrec     *cr,
 
 namespace gmx
 {
-gmx::ElementFunctionTypePtr gmx::DomDecElement::registerSetup()
-{
-    return nullptr;
-}
-
-gmx::ElementFunctionTypePtr gmx::DomDecElement::registerRun()
-{
-    if (DOMAINDECOMP(cr_))
-    {
-        return std::make_unique<ElementFunctionType>(
-                std::bind(&DomDecElement::run, this));
-    }
-    return nullptr;
-}
-
-gmx::ElementFunctionTypePtr gmx::DomDecElement::registerTeardown()
-{
-    return nullptr;
-}
 
 DomDecElement::DomDecElement(
         int                                   nstglobalcomm,
-        StepAccessorPtr                       stepAccessor,
         bool                                  isVerbose,
         int                                   verbosePrintInterval,
         std::shared_ptr<MicroState>          &microState,
@@ -3132,10 +3112,8 @@ DomDecElement::DomDecElement(
     isVerbose_(isVerbose),
     verbosePrintInterval_(verbosePrintInterval),
     isFirstStep_(true),
-    isLastStep_(false),
     nstglobalcomm_(nstglobalcomm),
     checkNOfBondedInteractionsCallback_(std::move(checkNOfBondedInteractionsCallback)),
-    stepAccessor_(std::move(stepAccessor)),
     microState_(microState),
     fplog_(fplog),
     cr_(cr),
@@ -3200,7 +3178,7 @@ void gmx::DomDecElement::init()
     }
 }
 
-void gmx::DomDecElement::run()
+void DomDecElement::run(long step)
 {
     if (!isNSStep_)
     {
@@ -3212,10 +3190,7 @@ void gmx::DomDecElement::run()
     // disabled functionality
     gmx_vsite_t *vsite = nullptr;
 
-    auto         step = (*stepAccessor_)();
-
-    bool         doVerbose = isVerbose_ &&
-        (step % verbosePrintInterval_ == 0 || isFirstStep_ || isLastStep_);
+    bool         doVerbose = isVerbose_ && (step % verbosePrintInterval_ == 0 || isFirstStep_);
 
     auto localState   = microState_->localState();
     auto globalState  = microState_->globalState();
@@ -3239,11 +3214,5 @@ NeighborSearchSignallerCallbackPtr DomDecElement::getNSCallback()
 {
     return std::make_unique<NeighborSearchSignallerCallback>(
             [this](){this->isNSStep_ = true; });
-}
-
-LastStepCallbackPtr DomDecElement::getLastStepCallback()
-{
-    return std::make_unique<LastStepCallback>(
-            [this](){this->isLastStep_ = true; });
 }
 }  // namespace gmx

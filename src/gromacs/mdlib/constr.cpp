@@ -1250,10 +1250,9 @@ bool inter_charge_group_settles(const gmx_mtop_t &mtop)
 }
 
 ConstrainCoordinates::ConstrainCoordinates(
-        StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+        std::shared_ptr<MicroState> &microState,
         const t_mdatoms *mdatoms, tensor shake_vir, Constraints *constr,
         FILE *fplog, const t_inputrec *inputrec) :
-    stepAccessor_(std::move(stepAccessor)),
     calculateVirialThisStep_(false),
     writeLogThisStep_(false),
     writeEnergyThisStep_(false),
@@ -1261,8 +1260,6 @@ ConstrainCoordinates::ConstrainCoordinates(
     shake_vir_(shake_vir),
     constr_(constr)
 {
-    GMX_ASSERT(stepAccessor_, "ConstrainCoordinates constructor: stepAccessor can not be nullptr");
-
     // TODO: Include a way to turn initial constraining on / off
     if (constr && (microState->getFlags() & (1 << estV)))
     {
@@ -1275,9 +1272,8 @@ ConstrainCoordinates::ConstrainCoordinates(
     }
 }
 
-void ConstrainCoordinates::run()
+void ConstrainCoordinates::run(long step)
 {
-    auto   step        = (*stepAccessor_)();
     real   dvdl_constr = 0;
     real   lambda      = 0;
 
@@ -1309,14 +1305,14 @@ ElementFunctionTypePtr ConstrainCoordinates::registerSetup()
 {
     return nullptr;
 }
-ElementFunctionTypePtr ConstrainCoordinates::registerRun()
+ElementFunctionTypePtr ConstrainCoordinates::scheduleRun(long step, real gmx_unused time)
 {
     if (!constr_)
     {
         return nullptr;
     }
-    return std::make_unique<ElementFunctionType>(std::bind(
-                                                         &ConstrainCoordinates::run, this));
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ConstrainCoordinates::run, this, step));
 }
 ElementFunctionTypePtr ConstrainCoordinates::registerTeardown()
 {
@@ -1364,22 +1360,18 @@ LoggingSignallerCallbackPtr ConstrainCoordinates::getLoggingCallback()
 }
 
 ConstrainVelocities::ConstrainVelocities(
-        StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+        std::shared_ptr<MicroState> &microState,
         tensor shake_vir, Constraints *constr) :
-    stepAccessor_(std::move(stepAccessor)),
     calculateVirialThisStep_(false),
     writeLogThisStep_(false),
     writeEnergyThisStep_(false),
     microState_(microState),
     shake_vir_(shake_vir),
     constr_(constr)
-{
-    GMX_ASSERT(stepAccessor_, "ConstrainVelocities constructor: stepAccessor can not be nullptr");
-}
+{}
 
-void ConstrainVelocities::run()
+void ConstrainVelocities::run(long step)
 {
-    auto step        = (*stepAccessor_)();
     real dvdl_constr = 0;
     real lambda      = 0;
 
@@ -1416,14 +1408,14 @@ ElementFunctionTypePtr ConstrainVelocities::registerSetup()
 {
     return nullptr;
 }
-ElementFunctionTypePtr ConstrainVelocities::registerRun()
+ElementFunctionTypePtr ConstrainVelocities::scheduleRun(long step, real gmx_unused time)
 {
     if (!constr_)
     {
         return nullptr;
     }
-    return std::make_unique<ElementFunctionType>(std::bind(
-                                                         &ConstrainVelocities::run, this));
+    return std::make_unique<ElementFunctionType>(
+            std::bind(&ConstrainVelocities::run, this, step));
 }
 ElementFunctionTypePtr ConstrainVelocities::registerTeardown()
 {

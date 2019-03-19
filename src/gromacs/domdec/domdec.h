@@ -396,13 +396,11 @@ real dd_choose_grid(const gmx::MDLogger &mdlog,
 
 namespace gmx
 {
-class DomDecElement :
-    public IIntegratorElement, public INeighborSearchSignallerClient, public ILastStepClient
+class DomDecElement : public INeighborSearchSignallerClient
 {
     public:
         DomDecElement(
             int                                   nstglobalcomm,
-            StepAccessorPtr                       stepAccessor,
             bool                                  isVerbose,
             int                                   verbosePrintInterval,
             std::shared_ptr<MicroState>          &microState,
@@ -420,20 +418,15 @@ class DomDecElement :
             gmx_shellfc_t                        *shellfc,
             CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback);
 
-        ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
-        ElementFunctionTypePtr registerTeardown() override;
+        void run(long step);
 
         NeighborSearchSignallerCallbackPtr getNSCallback() override;
-
-        LastStepCallbackPtr getLastStepCallback() override;
 
     private:
         bool       isNSStep_;
         const bool isVerbose_;
         const int  verbosePrintInterval_;
         bool       isFirstStep_;
-        bool       isLastStep_;
 
         //! Global communication interval
         const int nstglobalcomm_;
@@ -442,9 +435,7 @@ class DomDecElement :
         CheckNOfBondedInteractionsCallbackPtr checkNOfBondedInteractionsCallback_;
 
         void init();
-        void run();
 
-        StepAccessorPtr             stepAccessor_;
         std::shared_ptr<MicroState> microState_;
 
         // TODO: Rethink access to these

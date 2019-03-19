@@ -45,6 +45,7 @@
 #include <cstdio>
 
 #include <memory>
+#include <queue>
 #include <vector>
 
 #include "gromacs/math/paddedvector.h"
@@ -84,11 +85,14 @@ namespace gmx
 class AccumulateGlobalsBuilder;
 class BoxDeformation;
 class Constraints;
+class DomDecElement;
 class IMDOutputProvider;
 class IntegratorLoop;
+class LoopScheduler;
 class MDLogger;
 class MDAtoms;
 class MicroState;
+class NeighborSearchSignaller;
 class PpForceWorkload;
 class SimulationSignal;
 class StopHandlerBuilder;
@@ -101,21 +105,36 @@ class Integrator
         virtual ~Integrator() = default;
 };
 
-class SimpleIntegrator : public Integrator
+class ScheduledIntegrator : public Integrator
 {
     public:
         void run() override;
 
-        void setup(std::unique_ptr<IntegratorLoop> outerLoop, std::shared_ptr<MicroState> microState);
+        void setup(
+                std::unique_ptr<NeighborSearchSignaller> nsSignaller,
+                std::unique_ptr<DomDecElement> domDecElement,
+                std::unique_ptr<LoopScheduler> innerloopScheduler,
+                std::shared_ptr<MicroState> &microState);
+
+        //! Allows clients to register a last-step callback
+        void registerLastStepCallback(LastStepCallbackPtr callback);
 
         friend class IntegratorBuilder;
 
     private:
-        std::unique_ptr<IntegratorLoop> outerLoop_;
+        std::unique_ptr<NeighborSearchSignaller> nsSignaller_;
+        std::unique_ptr<DomDecElement> domDecElement_;
+        std::unique_ptr<LoopScheduler> innerloopScheduler_;
         std::shared_ptr<MicroState>     microState_;
 
+        //! List of callback to be called when the last step starts
+        std::vector<LastStepCallbackPtr> lastStepCallbacks_;
+
         const int64_t                   initStep_;
-        StepAccessorPtr                 stepAccessor_;
+        const int                       nstlist_;
+        const int64_t                   nSteps_;
+        const real                      initialTime_;
+        const real                      timeStep_;
 
         //! Handles logging.
         FILE                    *fplog_;
@@ -126,7 +145,7 @@ class SimpleIntegrator : public Integrator
         //! Manages wall time accounting.
         gmx_walltime_accounting *walltime_accounting_;
 
-        SimpleIntegrator(
+        ScheduledIntegrator(
             FILE                    *fplog,
             t_commrec               *cr,
             const MdrunOptions      &mdrunOptions,
@@ -135,8 +154,7 @@ class SimpleIntegrator : public Integrator
             t_nrnb                  *nrnb,
             Constraints             *constr,
             gmx_wallcycle           *wcycle,
-            gmx_walltime_accounting *walltime_accounting,
-            StepAccessorPtr          stepAccessor);
+            gmx_walltime_accounting *walltime_accounting);
 
     public:
         //! The local topology
@@ -157,56 +175,12 @@ class SimpleIntegrator : public Integrator
         t_vcm                          *vcm_;
 };
 
-
-/*! \internal
- * \brief Element managing the current step and time
- *
- * This element keeps track of the current step and time, it should be placed in the
- * innermost part of the integrator loop. The current step and time can be accessed
- * using accessors, available using `getStepAccessor()` and `getTimeAccessor()`. Clients
- * can also register a callback to be notified when the last integrator step starts.
- */
-class SimpleStepManager final : public IIntegratorElement
-{
-    public:
-        explicit SimpleStepManager(
-            real timestep, long nsteps = -1, long step = 0, real time = 0.0);
-
-        //! IIntegratorElement functions
-        ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
-        ElementFunctionTypePtr registerTeardown() override;
-
-        //! Returns a function pointer allowing to access the current step number
-        StepAccessorPtr getStepAccessor() const;
-        //! Returns a function pointer allowing to access the current time
-        TimeAccessorPtr getTimeAccessor() const;
-
-        //! Allows clients to register a last-step callback
-        void registerLastStepCallback(LastStepCallbackPtr callback);
-
-    private:
-        long step_;
-        long nsteps_;
-        real initialTime_;
-        real time_;
-        real timestep_;
-
-        //! List of callback to be called when the last step starts
-        std::vector<LastStepCallbackPtr> lastStepCallbacks_;
-
-        //! Increments the step and time, needs to be called every step
-        void increment();
-        //! Called before the first step - notifies clients if first step is also last step
-        void setup();
-};
-
-class PreLoopElement : public IIntegratorElement
+class PreLoopElement : public ISchedulerElement
 {
     public:
         explicit PreLoopElement(gmx_wallcycle *wcycle);
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
     private:
@@ -215,11 +189,10 @@ class PreLoopElement : public IIntegratorElement
         gmx_wallcycle *wcycle_;
 };
 
-class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClient
+class PostLoopElement : public ISchedulerElement, public ILoggingSignallerClient
 {
     public:
         PostLoopElement(
-            StepAccessorPtr          stepAccessor,
             bool                     doVerbose,
             int                      verboseStepInterval,
             FILE                    *fplog,
@@ -229,14 +202,14 @@ class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClien
             gmx_wallcycle           *wcycle);
 
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         LastStepCallbackPtr getLastStepCallback();
 
         LoggingSignallerCallbackPtr getLoggingCallback() override;
     private:
-        void run();
+        void run(long step);
         void nextStepIsLast();
         void thisStepIsLoggingStep();
 
@@ -247,8 +220,6 @@ class PostLoopElement : public IIntegratorElement, public ILoggingSignallerClien
         bool                     isLoggingStep_;
         bool                     isFirstStep_;
         bool                     isLastStep_;
-
-        StepAccessorPtr          stepAccessor_;
 
         FILE                    *fplog_;
         const t_inputrec        *inputrec_;
@@ -298,6 +269,38 @@ class IntegratorLoopBuilder
 
     private:
         std::vector < std::unique_ptr < IIntegratorElement>> elements_;
+};
+
+class LoopScheduler
+{
+public:
+    void setup();
+    void teardown();
+    void buildQueue(
+            std::queue<ElementFunctionTypePtr> &queue,
+            long firstStep, long numSteps,
+            real startTime, real timeStep);
+
+    friend class LoopSchedulerBuilder;
+private:
+    std::vector<std::unique_ptr<ISchedulerElement>> elements_;
+    std::vector<std::unique_ptr<ISignallerElement>> signallers_;
+
+    LoopScheduler(
+            std::vector<std::unique_ptr<gmx::ISchedulerElement>> elements,
+            std::vector<std::unique_ptr<gmx::ISignallerElement>> signallers);
+};
+
+class LoopSchedulerBuilder
+{
+public:
+    void addElement(std::unique_ptr<ISchedulerElement> element);
+    void addSignaller(std::unique_ptr<ISignallerElement> signaller);
+    std::unique_ptr<LoopScheduler> build();
+
+private:
+    std::vector < std::unique_ptr < ISchedulerElement>> elements_;
+    std::vector < std::unique_ptr < ISignallerElement>> signallers_;
 };
 
 class IntegratorBuilder

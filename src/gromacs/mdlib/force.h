@@ -179,37 +179,31 @@ namespace gmx
  * This element monitors the current step, and informs its clients via callbacks
  * when a neighbor-searching step is happening.
  */
-class NeighborSearchSignaller : public IIntegratorElement
+class NeighborSearchSignaller
 {
     public:
         //! Constructor
-        explicit NeighborSearchSignaller(StepAccessorPtr stepAccessor, int nstlist);
-
-        //! IIntegratorElement functions
-        ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
-        ElementFunctionTypePtr registerTeardown() override;
-
-        //! Allows clients to register a neighbor-search step callback
-        void registerCallback(NeighborSearchSignallerCallbackPtr callback);
-
-    private:
-        StepAccessorPtr stepAccessor_;
-        const int       nstlist_;
-
-        std::vector<NeighborSearchSignallerCallbackPtr> callbacks_;
+        explicit NeighborSearchSignaller(int nstlist);
 
         //! Informs clients that first step is callback by default
         void setup();
         /* Queries the current step via the step accessor, and informs its clients
          * if a neighbor search is going to happen this step.
          */
-        void run();
+        void run(long step);
+
+        //! Allows clients to register a neighbor-search step callback
+        void registerCallback(NeighborSearchSignallerCallbackPtr callback);
+
+    private:
+        const int       nstlist_;
+
+        std::vector<NeighborSearchSignallerCallbackPtr> callbacks_;
 };
 
 //! The force element manages the call to do_force(...)
 class ForceElement :
-    public IIntegratorElement,
+    public ISchedulerElement,
     public INeighborSearchSignallerClient,
     public IEnergySignallerClient
 {
@@ -218,8 +212,6 @@ class ForceElement :
         ForceElement(
             bool                         isDynamicBox,
             bool                         isDomDec,
-            StepAccessorPtr              stepAccessor,
-            TimeAccessorPtr              timeAccessor,
             std::shared_ptr<MicroState> &microState,
             gmx_enerdata_t              *enerd,
             tensor                       force_vir,
@@ -238,7 +230,7 @@ class ForceElement :
 
         //! IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         //! Register callback to get informed about neighbor searching step
@@ -260,12 +252,11 @@ class ForceElement :
         const DdOpenBalanceRegionBeforeForceComputation ddOpenBalanceRegion_;
         const DdCloseBalanceRegionAfterForceComputation ddCloseBalanceRegion_;
 
-        StepAccessorPtr                                 stepAccessor_;
-        TimeAccessorPtr                                 timeAccessor_;
-
         std::shared_ptr<MicroState>                     microState_;
 
-        void run();
+        void run(
+                long currentStep, real currentTime,
+                bool calculateVirial, bool calculateEnergy, bool calculateFreeEnergy, bool doNeighborSearch);
 
         // TODO: Rethink access to these
         gmx_enerdata_t           *enerd_;

@@ -291,17 +291,17 @@ bool inter_charge_group_constraints(const gmx_mtop_t &mtop);
 bool inter_charge_group_settles(const gmx_mtop_t &mtop);
 
 class ConstrainCoordinates :
-    public IIntegratorElement, public ILoggingSignallerClient, public IEnergySignallerClient
+    public ISchedulerElement, public ILoggingSignallerClient, public IEnergySignallerClient
 {
     public:
         ConstrainCoordinates(
-            StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+            std::shared_ptr<MicroState> &microState,
             const t_mdatoms *mdatoms, tensor shake_vir, Constraints *constr,
             FILE *fplog, const t_inputrec *inputrec);
 
         // IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
@@ -312,8 +312,6 @@ class ConstrainCoordinates :
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        StepAccessorPtr             stepAccessor_;
-
         bool                        calculateVirialThisStep_;
         bool                        writeLogThisStep_;
         bool                        writeEnergyThisStep_;
@@ -326,20 +324,20 @@ class ConstrainCoordinates :
         Constraints *constr_;
 
         // Run the update
-        void run();
+        void run(long step);
 };
 
 class ConstrainVelocities :
-    public IIntegratorElement, public ILoggingSignallerClient, public IEnergySignallerClient
+    public ISchedulerElement, public ILoggingSignallerClient, public IEnergySignallerClient
 {
     public:
         ConstrainVelocities(
-            StepAccessorPtr stepAccessor, std::shared_ptr<MicroState> &microState,
+            std::shared_ptr<MicroState> &microState,
             tensor shake_vir, Constraints *constr);
 
         // IIntegratorElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        ElementFunctionTypePtr scheduleRun(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         EnergySignallerCallbackPtr getCalculateEnergyCallback() override;
@@ -350,8 +348,6 @@ class ConstrainVelocities :
         LoggingSignallerCallbackPtr getLoggingCallback() override;
 
     private:
-        StepAccessorPtr             stepAccessor_;
-
         bool                        calculateVirialThisStep_;
         bool                        writeLogThisStep_;
         bool                        writeEnergyThisStep_;
@@ -363,7 +359,7 @@ class ConstrainVelocities :
         Constraints *constr_;
 
         // Run the update
-        void run();
+        void run(long step);
 };
 
 }  // namespace gmx

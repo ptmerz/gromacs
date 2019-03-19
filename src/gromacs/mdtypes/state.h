@@ -321,12 +321,10 @@ positionsFromStatePointer(const t_state *state)
 namespace gmx
 {
 
-class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerClient
+class MicroState : public ITrajectoryWriterClient
 {
     public:
         MicroState(
-            StepAccessorPtr           stepAccessor,
-            TimeAccessorPtr           timeAccessor,
             int                       natoms,
             FILE                     *fplog,
             const t_commrec          *cr,
@@ -337,13 +335,10 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
             int                       nstxout_compressed);
 
         // ITrajectoryWriterClient
-        TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup() override;
+        TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterSetup() override;
         TrajectoryWriterCallbackPtr registerTrajectoryRun() override;
         TrajectoryWriterCallbackPtr registerEnergyRun() override;
-        TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() override;
-
-        // ITrajectorySignallerClient
-        TrajectorySignallerCallbackPtr getTrajectorySignallerCallback() override;
+        TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterTeardown() override;
 
         // Allow access to state
         ArrayRefWithPadding<RVec> writePosition();
@@ -366,6 +361,7 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         int getFlags();
         void copyPosition();
         void copyPosition(int start, int end);
+        void writeTrajectoryThisStep();
 
     private:
         int totalNAtoms_;
@@ -373,10 +369,6 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
         int nstvout_;
         int nstfout_;
         int nstxout_compressed_;
-
-        // Access step & time
-        StepAccessorPtr          stepAccessor_;
-        TimeAccessorPtr          timeAccessor_;
 
         int                      localNAtoms_;
         PaddedHostVector<RVec>   x_;
@@ -389,8 +381,7 @@ class MicroState : public ITrajectoryWriterClient, public ITrajectorySignallerCl
 
         std::unique_ptr<t_state> localStateBackup_;
 
-        void write(gmx_mdoutf_t outf);
-        void writeTrajectoryThisStep();
+        void write(gmx_mdoutf_t outf, long step, real time);
 
         // TODO: Rethink access to these
         FILE                     *fplog_;

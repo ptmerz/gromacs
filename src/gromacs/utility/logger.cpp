@@ -82,8 +82,7 @@ MDLogger::MDLogger(ILogTarget *targets[LogLevelCount])
 {}
 
 //! Allows clients to register a logging step callback
-LoggingSignaller::LoggingSignaller(StepAccessorPtr stepAccessor, int nstlog) :
-    stepAccessor_(std::move(stepAccessor)),
+LoggingSignaller::LoggingSignaller(int nstlog) :
     nstlog_(nstlog),
     isLastStep_(false)
 {}
@@ -109,10 +108,8 @@ void LoggingSignaller::setup()
 /*! Queries the current step via the step accessor, and informs its clients
  * if this is a logging step.
  */
-void LoggingSignaller::run()
+void LoggingSignaller::run(long step, real gmx_unused time)
 {
-    auto step = (*stepAccessor_)();
-
     if (do_per_step(step, nstlog_) || isLastStep_)
     {
         for (const auto &callback : callbacks_)
@@ -133,12 +130,6 @@ ElementFunctionTypePtr LoggingSignaller::registerSetup()
 {
     return std::make_unique<ElementFunctionType>(
             std::bind(&LoggingSignaller::setup, this));
-}
-
-ElementFunctionTypePtr LoggingSignaller::registerRun()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&LoggingSignaller::run, this));
 }
 
 ElementFunctionTypePtr LoggingSignaller::registerTeardown()

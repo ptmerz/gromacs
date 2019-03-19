@@ -218,7 +218,9 @@ TrajectoryWriter::TrajectoryWriter(
         const t_commrec *cr,
         gmx::IMDOutputProvider *outputProvider,
         const t_inputrec *ir, gmx_mtop_t *top_global,
-        const gmx_output_env_t *oenv, gmx_wallcycle_t wcycle)
+        const gmx_output_env_t *oenv, gmx_wallcycle_t wcycle) :
+    writeEnergyThisStep_(false),
+    writeTrajectoryThisStep_(false)
 {
     outf_ = init_mdoutf(
                 fplog, nfile, fnm, mdrunOptions, cr,
@@ -233,15 +235,21 @@ void TrajectoryWriter::setup()
     }
 }
 
-void TrajectoryWriter::write()
+void TrajectoryWriter::write(long step, real time, bool writeTrajectory, bool writeEnergy)
 {
-    for (auto &callback : runTrajectoryCallbacks_)
+    if (writeTrajectory)
     {
-        (*callback)(outf_);
+        for (auto &callback : runTrajectoryCallbacks_)
+        {
+            (*callback)(outf_, step, time);
+        }
     }
-    for (auto &callback : runEnergyCallbacks_)
+    if (writeEnergy)
     {
-        (*callback)(outf_);
+        for (auto &callback : runEnergyCallbacks_)
+        {
+            (*callback)(outf_, step, time);
+        }
     }
 }
 
@@ -261,10 +269,17 @@ ElementFunctionTypePtr TrajectoryWriter::registerSetup()
             std::bind(&TrajectoryWriter::setup, this));
 }
 
-ElementFunctionTypePtr TrajectoryWriter::registerRun()
+ElementFunctionTypePtr TrajectoryWriter::scheduleRun(long step, real time)
 {
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&TrajectoryWriter::write, this));
+    if (writeEnergyThisStep_ || writeTrajectoryThisStep_)
+    {
+        auto callback = std::make_unique<ElementFunctionType>(
+                std::bind(&TrajectoryWriter::write, this, step, time, writeTrajectoryThisStep_, writeEnergyThisStep_));
+        writeTrajectoryThisStep_ = false;
+        writeEnergyThisStep_ = false;
+        return callback;
+    }
+    return nullptr;
 }
 
 
@@ -275,10 +290,10 @@ ElementFunctionTypePtr TrajectoryWriter::registerTeardown()
 }
 
 void TrajectoryWriter::registerClient(
-        TrajectoryWriterCallbackPtr setupCallback,
+        TrajectoryWriterPrePostCallbackPtr setupCallback,
         TrajectoryWriterCallbackPtr runTrajectoryCallback,
         TrajectoryWriterCallbackPtr runEnergyCallback,
-        TrajectoryWriterCallbackPtr teardownCallback)
+        TrajectoryWriterPrePostCallbackPtr teardownCallback)
 {
     if (setupCallback)
     {
@@ -298,10 +313,35 @@ void TrajectoryWriter::registerClient(
     }
 }
 
+EnergySignallerCallbackPtr TrajectoryWriter::getCalculateEnergyCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr TrajectoryWriter::getCalculateVirialCallback()
+{
+    return nullptr;
+}
+
+EnergySignallerCallbackPtr TrajectoryWriter::getWriteEnergyCallback()
+{
+    return std::make_unique<EnergySignallerCallback>(
+            [this](){this->writeEnergyThisStep_ = true; });
+}
+
+EnergySignallerCallbackPtr TrajectoryWriter::getCalculateFreeEnergyCallback()
+{
+    return nullptr;
+}
+
+TrajectorySignallerCallbackPtr TrajectoryWriter::getTrajectorySignallerCallback()
+{
+    return std::make_unique<TrajectorySignallerCallback>(
+            [this](){this->writeTrajectoryThisStep_ = true; });
+}
+
 TrajectorySignaller::TrajectorySignaller(
-        StepAccessorPtr stepAccessor,
         int nstxout, int nstvout, int nstfout, int nstxout_compressed) :
-    stepAccessor_(std::move(stepAccessor)),
     nstxout_(nstxout),
     nstvout_(nstvout),
     nstfout_(nstfout),
@@ -311,12 +351,6 @@ TrajectorySignaller::TrajectorySignaller(
 ElementFunctionTypePtr TrajectorySignaller::registerSetup()
 {
     return nullptr;
-}
-
-ElementFunctionTypePtr TrajectorySignaller::registerRun()
-{
-    return std::make_unique<ElementFunctionType>(
-            std::bind(&TrajectorySignaller::run, this));
 }
 
 ElementFunctionTypePtr TrajectorySignaller::registerTeardown()
@@ -332,9 +366,8 @@ void TrajectorySignaller::registerCallback(TrajectorySignallerCallbackPtr callba
     }
 }
 
-void TrajectorySignaller::run()
+void TrajectorySignaller::run(long currentStep, real gmx_unused time)
 {
-    auto currentStep = (*stepAccessor_)();
     if (do_per_step(currentStep, nstxout_) ||
         do_per_step(currentStep, nstvout_) ||
         do_per_step(currentStep, nstfout_) ||
@@ -345,5 +378,38 @@ void TrajectorySignaller::run()
             (*callback)();
         }
     }
+}
+
+TrajectorySaver::TrajectorySaver(std::shared_ptr<MicroState> &microState) :
+    isTrajectoryWritingStep_(false),
+    microState_(microState)
+{}
+
+ElementFunctionTypePtr TrajectorySaver::registerSetup()
+{
+    return nullptr;
+}
+
+ElementFunctionTypePtr TrajectorySaver::scheduleRun(long gmx_unused step, real gmx_unused time)
+{
+    if (isTrajectoryWritingStep_)
+    {
+        isTrajectoryWritingStep_ = false;
+        auto microState = microState_;
+        return std::make_unique<ElementFunctionType>(
+                [microState](){microState->writeTrajectoryThisStep(); });
+    }
+    return nullptr;
+}
+
+ElementFunctionTypePtr TrajectorySaver::registerTeardown()
+{
+    return nullptr;
+}
+
+TrajectorySignallerCallbackPtr TrajectorySaver::getTrajectorySignallerCallback()
+{
+    return std::make_unique<TrajectorySignallerCallback>(
+            [this](){this->isTrajectoryWritingStep_ = true; });
 }
 }

@@ -236,15 +236,18 @@ class MDLogger
  * This element monitors the current step, and informs its clients via callbacks
  * when a logging step is happening.
  */
-class LoggingSignaller : public IIntegratorElement, public ILastStepClient
+class LoggingSignaller : public ISignallerElement, public ILastStepClient
 {
     public:
         //! Constructor
-        explicit LoggingSignaller(StepAccessorPtr stepAccessor, int nstlog);
+        explicit LoggingSignaller(int nstlog);
 
-        //! IIntegratorElement functions
+        //! ISignallerElement functions
         ElementFunctionTypePtr registerSetup() override;
-        ElementFunctionTypePtr registerRun() override;
+        /*! Queries the current step via the step accessor, and informs its clients
+         * if this is a logging step.
+         */
+        void run(long step, real time) override;
         ElementFunctionTypePtr registerTeardown() override;
 
         //! Allows clients to register a logging step callback
@@ -254,7 +257,6 @@ class LoggingSignaller : public IIntegratorElement, public ILastStepClient
         LastStepCallbackPtr getLastStepCallback() override;
 
     private:
-        StepAccessorPtr stepAccessor_;
         const int       nstlog_;
         bool            isLastStep_;
 
@@ -262,10 +264,6 @@ class LoggingSignaller : public IIntegratorElement, public ILastStepClient
 
         //! Informs clients that first step is a logging step (by default)
         void setup();
-        /*! Queries the current step via the step accessor, and informs its clients
-         * if this is a logging step.
-         */
-        void run();
 };
 
 } // namespace gmx

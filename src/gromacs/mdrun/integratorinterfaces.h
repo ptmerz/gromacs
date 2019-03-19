@@ -79,6 +79,39 @@ class IUpdateElement : public IIntegratorElement
         virtual UpdateRunFunctionTypePtr registerUpdateRun() = 0;
 };
 
+/*! \internal
+ * \brief Interface for elements of the scheduled integrator
+ *
+ * These will decide based on a step number and time whether (and, possibly,
+ * what) they will run at that specific step
+ */
+class ISchedulerElement
+{
+    public:
+        virtual ElementFunctionTypePtr registerSetup()                   = 0;
+        virtual ElementFunctionTypePtr scheduleRun(long step, real time) = 0;
+        virtual ElementFunctionTypePtr registerTeardown()                = 0;
+
+        virtual ~ISchedulerElement() = default;
+};
+
+/*! \internal
+ * \brief Interface for signaller elements
+ *
+ * These elements will be ran directly by the schedule builder, and will inform
+ * registered clients whether the next step will be a "special step".
+ */
+
+class ISignallerElement
+{
+public:
+    virtual ElementFunctionTypePtr registerSetup()    = 0;
+    virtual void run(long step, real time)            = 0;
+    virtual ElementFunctionTypePtr registerTeardown() = 0;
+
+    virtual ~ISignallerElement() = default;
+};
+
 //! Defines a function / function pointer which can be used to access the current step
 typedef std::function<long()> StepAccessor;
 typedef std::unique_ptr<StepAccessor> StepAccessorPtr;
@@ -96,6 +129,8 @@ class ILastStepClient
     public:
         //! Client returns a callback function pointer
         virtual LastStepCallbackPtr getLastStepCallback() = 0;
+
+        virtual ~ILastStepClient() = default;
 };
 
 //! Defines a callback for neighbor searching steps
@@ -108,6 +143,8 @@ class INeighborSearchSignallerClient
     public:
         //! Client returns a callback function pointer
         virtual NeighborSearchSignallerCallbackPtr getNSCallback() = 0;
+
+        virtual ~INeighborSearchSignallerClient() = default;
 };
 
 //! Defines a callback for logging steps
@@ -160,7 +197,9 @@ class ITrajectorySignallerClient
 };
 
 // Define a callback which allows elements to write to the trajectory
-typedef std::function<void(gmx_mdoutf* outf)> TrajectoryWriterCallback;
+typedef std::function<void(gmx_mdoutf* outf)> TrajectoryWriterPrePostCallback;
+typedef std::unique_ptr<TrajectoryWriterPrePostCallback> TrajectoryWriterPrePostCallbackPtr;
+typedef std::function<void(gmx_mdoutf* outf, long step, real time)> TrajectoryWriterCallback;
 typedef std::unique_ptr<TrajectoryWriterCallback> TrajectoryWriterCallbackPtr;
 
 /*! \brief Interface defining a client of the trajectory writer
@@ -178,10 +217,10 @@ typedef std::unique_ptr<TrajectoryWriterCallback> TrajectoryWriterCallbackPtr;
 class ITrajectoryWriterClient
 {
     public:
-        virtual TrajectoryWriterCallbackPtr registerTrajectoryWriterSetup()    = 0;
+        virtual TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterSetup()    = 0;
         virtual TrajectoryWriterCallbackPtr registerTrajectoryRun()            = 0;
         virtual TrajectoryWriterCallbackPtr registerEnergyRun()                = 0;
-        virtual TrajectoryWriterCallbackPtr registerTrajectoryWriterTeardown() = 0;
+        virtual TrajectoryWriterPrePostCallbackPtr registerTrajectoryWriterTeardown() = 0;
 
         virtual ~ITrajectoryWriterClient() = default;
 };
