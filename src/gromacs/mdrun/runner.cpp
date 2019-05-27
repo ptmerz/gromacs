@@ -148,8 +148,9 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 
-#include "legacysimulator.h"
 #include "replicaexchange.h"
+#include "simulator.h"
+#include "simulatorbuilder.h"
 
 #if GMX_FAHCORE
 #include "corewrap.h"
@@ -1495,8 +1496,9 @@ int Mdrunner::mdrunner()
         PpForceWorkload ppForceWorkload;
 
         GMX_ASSERT(stopHandlerBuilder_, "Runner must provide StopHandlerBuilder to simulator.");
+        SimulatorBuilder simulatorBuilder;
         /* Now do whatever the user wants us to do (how flexible...) */
-        std::unique_ptr<Simulator> simulator = std::make_unique<LegacySimulator>(
+        auto             simulator = simulatorBuilder.build(
                     fplog, cr, ms, mdlog, static_cast<int>(filenames.size()), filenames.data(),
                     oenv,
                     mdrunOptions,

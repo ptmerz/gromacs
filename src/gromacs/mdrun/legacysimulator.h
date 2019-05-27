@@ -189,8 +189,6 @@ class LegacySimulator : public Simulator
         SimulatorFunctionType               do_tpi;
         //! Implements MiMiC QM/MM workflow
         SimulatorFunctionType               do_mimic;
-
-    public:
         //! The constructor
         LegacySimulator(
             FILE                               *fplog,
@@ -226,6 +224,9 @@ class LegacySimulator : public Simulator
             gmx_walltime_accounting            *walltime_accounting,
             std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
             bool                                doRerun);
+
+    public:
+        friend class SimulatorBuilder;
 
         /*! \brief Function to run the correct SimulatorFunctionType,
          * based on the .mdp integrator field. */
