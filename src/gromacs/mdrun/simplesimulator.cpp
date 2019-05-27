@@ -33,24 +33,26 @@
  * the research papers on the package. Check out http://www.gromacs.org.
  */
 /*! \internal
- * \brief Defines the simulator builder for mdrun
+ * \brief Defines a simplified dispatch function for the .mdp integrator field.
  *
+ * \author David van der Spoel <david.vanderspoel@icm.uu.se>
+ * \author Mark Abraham <mark.j.abraham@gmail.com>
  * \author Pascal Merz <pascal.merz@me.com>
  * \ingroup module_mdrun
  */
 #include "gmxpre.h"
 
-#include "simulatorbuilder.h"
+#include "simplesimulator.h"
 
 #include "gromacs/mdlib/stophandler.h"
-
-#include "legacysimulator.h"
-#include "simplesimulator.h"
+#include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/utility/exceptions.h"
 
 namespace gmx
 {
-//! Build a Simulator object
-std::unique_ptr<Simulator> SimulatorBuilder::build(
+//! Constructor
+SimpleSimulator::SimpleSimulator(
         FILE                               *fplog,
         t_commrec                          *cr,
         const gmx_multisim_t               *ms,
@@ -83,58 +85,63 @@ std::unique_ptr<Simulator> SimulatorBuilder::build(
         gmx_membed_t                       *membed,
         gmx_walltime_accounting            *walltime_accounting,
         std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder,
-        bool                                doRerun)
+        bool                                doRerun) :
+    fplog(fplog),
+    cr(cr),
+    ms(ms),
+    mdlog(mdlog),
+    nfile(nfile),
+    fnm(fnm),
+    oenv(oenv),
+    mdrunOptions(mdrunOptions),
+    startingBehavior(startingBehavior),
+    vsite(vsite),
+    constr(constr),
+    enforcedRotation(enforcedRotation),
+    deform(deform),
+    outputProvider(outputProvider),
+    inputrec(inputrec),
+    imdSession(imdSession),
+    pull_work(pull_work),
+    swap(swap),
+    top_global(top_global),
+    fcd(fcd),
+    state_global(state_global),
+    observablesHistory(observablesHistory),
+    mdAtoms(mdAtoms),
+    nrnb(nrnb),
+    wcycle(wcycle),
+    fr(fr),
+    enerd(enerd),
+    ppForceWorkload(ppForceWorkload),
+    replExParams(replExParams),
+    membed(membed),
+    walltime_accounting(walltime_accounting),
+    stopHandlerBuilder(std::move(stopHandlerBuilder)),
+    doRerun(doRerun)
+{}
+
+//! \brief Run the correct integrator function.
+void SimpleSimulator::run()
 {
-    const auto useModularSimulator = (getenv("GMX_USE_MODULAR_SIMULATOR") != nullptr);
-    if (!useModularSimulator)
+    switch (inputrec->eI)
     {
-        return std::unique_ptr<LegacySimulator>(
-                new LegacySimulator(
-                        fplog, cr, ms, mdlog, nfile, fnm,
-                        oenv,
-                        mdrunOptions,
-                        startingBehavior,
-                        vsite, constr,
-                        enforcedRotation,
-                        deform,
-                        outputProvider,
-                        inputrec, imdSession, pull_work, swap, top_global,
-                        fcd,
-                        state_global,
-                        observablesHistory,
-                        mdAtoms, nrnb, wcycle, fr,
-                        enerd,
-                        ppForceWorkload,
-                        replExParams,
-                        membed,
-                        walltime_accounting,
-                        std::move(stopHandlerBuilder),
-                        doRerun));
-    }
-    else
-    {
-        return std::unique_ptr<SimpleSimulator>(
-                new SimpleSimulator(
-                        fplog, cr, ms, mdlog, nfile, fnm,
-                        oenv,
-                        mdrunOptions,
-                        startingBehavior,
-                        vsite, constr,
-                        enforcedRotation,
-                        deform,
-                        outputProvider,
-                        inputrec, imdSession, pull_work, swap, top_global,
-                        fcd,
-                        state_global,
-                        observablesHistory,
-                        mdAtoms, nrnb, wcycle, fr,
-                        enerd,
-                        ppForceWorkload,
-                        replExParams,
-                        membed,
-                        walltime_accounting,
-                        std::move(stopHandlerBuilder),
-                        doRerun));
+        case eiMD:
+        case eiBD:
+        case eiSD1:
+        case eiVV:
+        case eiVVAK:
+            if (!EI_DYNAMICS(inputrec->eI))
+            {
+                GMX_THROW(APIError("do_md integrator would be called for a non-dynamical integrator"));
+            }
+            if (!doRerun)
+            {
+                do_simplemd();
+                break;
+            }
+        default:
+            GMX_THROW(APIError("Selected integrator is not compatible with modular simulator."));
     }
 }
-}
+}  // namespace gmx

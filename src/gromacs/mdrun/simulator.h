@@ -43,6 +43,9 @@
 
 namespace gmx
 {
+//! Function type for simulator code.
+using SimulatorFunctionType = void();
+
 /*! \internal
  * \brief The Simulator interface
  *

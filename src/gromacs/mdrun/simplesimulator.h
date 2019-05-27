@@ -1,7 +1,7 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2015,2016,2017,2018,2019, by the GROMACS development team, led by
+ * Copyright (c) 2019, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -33,14 +33,15 @@
  * the research papers on the package. Check out http://www.gromacs.org.
  */
 /*! \internal
- * \brief Declares the simulator interface for mdrun
+ * \brief Declares the simulator interface for a simplified version of mdrun
  *
  * \author David van der Spoel <david.vanderspoel@icm.uu.se>
  * \author Mark Abraham <mark.j.abraham@gmail.com>
+ * \author Pascal Merz <pascal.merz@me.com>
  * \ingroup module_mdrun
  */
-#ifndef GMX_MDRUN_LEGACYSIMULATOR_H
-#define GMX_MDRUN_LEGACYSIMULATOR_H
+#ifndef GMX_MDRUN_SIMPLESIMULATOR_H
+#define GMX_MDRUN_SIMPLESIMULATOR_H
 
 #include <cstdio>
 
@@ -101,7 +102,7 @@ struct MdrunOptions;
  * code. Once many of them have become modules, we should change this
  * approach.
  */
-class LegacySimulator : public Simulator
+class SimpleSimulator : public Simulator
 {
     private:
         //! Handles logging.
@@ -171,23 +172,9 @@ class LegacySimulator : public Simulator
         //! Whether we're doing a rerun.
         bool                                doRerun;
         //! Implements the normal MD simulations.
-        SimulatorFunctionType               do_md;
-        //! Implements the rerun functionality.
-        SimulatorFunctionType               do_rerun;
-        //! Implements steepest descent EM.
-        SimulatorFunctionType               do_steep;
-        //! Implements conjugate gradient energy minimization
-        SimulatorFunctionType               do_cg;
-        //! Implements onjugate gradient energy minimization using the L-BFGS algorithm
-        SimulatorFunctionType               do_lbfgs;
-        //! Implements normal mode analysis
-        SimulatorFunctionType               do_nm;
-        //! Implements test particle insertion
-        SimulatorFunctionType               do_tpi;
-        //! Implements MiMiC QM/MM workflow
-        SimulatorFunctionType               do_mimic;
+        SimulatorFunctionType               do_simplemd;
         //! The constructor
-        LegacySimulator(
+        SimpleSimulator(
             FILE                               *fplog,
             t_commrec                          *cr,
             const gmx_multisim_t               *ms,
@@ -232,4 +219,4 @@ class LegacySimulator : public Simulator
 
 }      // namespace gmx
 
-#endif // GMX_MDRUN_LEGACYSIMULATOR_H
+#endif // GMX_MDRUN_SIMPLESIMULATOR_H

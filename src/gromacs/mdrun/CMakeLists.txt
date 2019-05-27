@@ -43,6 +43,8 @@ gmx_add_libgromacs_sources(
     rerun.cpp
     runner.cpp
     shellfc.cpp
+    simple_md.cpp
+    simplesimulator.cpp
     simulationcontext.cpp
     simulatorbuilder.cpp
     tpi.cpp
