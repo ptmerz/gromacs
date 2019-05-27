@@ -104,8 +104,8 @@
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/smalloc.h"
 
+#include "legacysimulator.h"
 #include "shellfc.h"
-#include "simulator.h"
 
 //! Utility structure for manipulating states during EM
 typedef struct {
@@ -1059,7 +1059,7 @@ namespace gmx
 {
 
 void
-Simulator::do_cg()
+LegacySimulator::do_cg()
 {
     const char        *CG = "Polak-Ribiere Conjugate Gradients";
 
@@ -1686,7 +1686,7 @@ Simulator::do_cg()
 
 
 void
-Simulator::do_lbfgs()
+LegacySimulator::do_lbfgs()
 {
     static const char *LBFGS = "Low-Memory BFGS Minimizer";
     em_state_t         ems;
@@ -2416,7 +2416,7 @@ Simulator::do_lbfgs()
 }
 
 void
-Simulator::do_steep()
+LegacySimulator::do_steep()
 {
     const char       *SD  = "Steepest Descents";
     gmx_localtop_t    top;
@@ -2657,7 +2657,7 @@ Simulator::do_steep()
 }
 
 void
-Simulator::do_nm()
+LegacySimulator::do_nm()
 {
     const char          *NM = "Normal Mode Analysis";
     int                  nnodes, node;
