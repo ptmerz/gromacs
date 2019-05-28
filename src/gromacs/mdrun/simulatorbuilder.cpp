@@ -42,9 +42,16 @@
 
 #include "simulatorbuilder.h"
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/mdlib/stophandler.h"
+#include "gromacs/mdlib/update.h"
+#include "gromacs/mdrunutility/handlerestart.h"
+#include "gromacs/mdtypes/fcdata.h"
+#include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/observableshistory.h"
 
 #include "legacysimulator.h"
+#include "replicaexchange.h"
 #include "simplesimulator.h"
 
 namespace gmx
@@ -113,6 +120,67 @@ std::unique_ptr<Simulator> SimulatorBuilder::build(
     }
     else
     {
+        GMX_RELEASE_ASSERT(
+                inputrec->eI == eiMD || inputrec->eI == eiVV,
+                "Only integrators md and md-vv are supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !doRerun,
+                "Rerun is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                startingBehavior == StartingBehavior::NewSimulation,
+                "Checkpointing is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                inputrec->etc == etcNO,
+                "Temperature coupling is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                inputrec->epc == epcNO,
+                "Pressure coupling is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !(inputrecNptTrotter(inputrec) || inputrecNphTrotter(inputrec) || inputrecNvtTrotter(inputrec)),
+                "Legacy Trotter decomposition is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                inputrec->efep == efepNO,
+                "Free energy calculation is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                vsite == nullptr,
+                "Virtual sites are not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !inputrec->bDoAwh,
+                "AWH is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                ms == nullptr,
+                "Multi-sim are not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                replExParams.exchangeInterval == 0,
+                "Replica exchange is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                fcd->disres.nsystems <= 1,
+                "Ensemble restraints are not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !doSimulatedAnnealing(inputrec),
+                "Simulated annealing is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !inputrec->bSimTemp,
+                "Simulated tempering is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !inputrec->bExpanded,
+                "Expanded ensemble simulations are not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !(opt2bSet("-ei", nfile, fnm) || observablesHistory->edsamHistory != nullptr),
+                "Essential dynamics is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                inputrec->eSwapCoords == eswapNO,
+                "Ion / water position swapping is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                !inputrec->bIMD,
+                "Interactive MD is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                membed == nullptr,
+                "Membrane embedding is not supported by the modular simulator.");
+        GMX_RELEASE_ASSERT(
+                getenv("GMX_INTEGRATE_GPU") == nullptr,
+                "Integration on the GPU is not supported by the modular simulator.");
+
         return std::unique_ptr<SimpleSimulator>(
                 new SimpleSimulator(
                         fplog, cr, ms, mdlog, nfile, fnm,

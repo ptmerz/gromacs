@@ -124,24 +124,6 @@ SimpleSimulator::SimpleSimulator(
 //! \brief Run the correct integrator function.
 void SimpleSimulator::run()
 {
-    switch (inputrec->eI)
-    {
-        case eiMD:
-        case eiBD:
-        case eiSD1:
-        case eiVV:
-        case eiVVAK:
-            if (!EI_DYNAMICS(inputrec->eI))
-            {
-                GMX_THROW(APIError("do_md integrator would be called for a non-dynamical integrator"));
-            }
-            if (!doRerun)
-            {
-                do_simplemd();
-                break;
-            }
-        default:
-            GMX_THROW(APIError("Selected integrator is not compatible with modular simulator."));
-    }
+    do_simplemd();
 }
 }  // namespace gmx
