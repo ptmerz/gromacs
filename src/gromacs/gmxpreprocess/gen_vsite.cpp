@@ -469,7 +469,7 @@ static real get_ddb_angle(gmx::ArrayRef<const VirtualSiteTopology> vsitetop,
 }
 
 
-static void count_bonds(int atom, InteractionTypeParameters *psb, char ***atomname,
+static void count_bonds(int atom, InteractionsOfType *psb, char ***atomname,
                         int *nrbonds, int *nrHatoms, int Hatoms[], int *Heavy,
                         int *nrheavies, int heavies[])
 {
@@ -477,15 +477,15 @@ static void count_bonds(int atom, InteractionTypeParameters *psb, char ***atomna
 
     /* find heavy atom bound to this hydrogen */
     heavy = NOTSET;
-    for (int i = 0; (i < psb->nr) && (heavy == NOTSET); i++)
+    for (auto parm = psb->interactionTypes.begin(); (parm != psb->interactionTypes.end()) && (heavy == NOTSET); parm++)
     {
-        if (psb->param[i].ai() == atom)
+        if (parm->ai() == atom)
         {
-            heavy = psb->param[i].aj();
+            heavy = parm->aj();
         }
-        else if (psb->param[i].aj() == atom)
+        else if (parm->aj() == atom)
         {
-            heavy = psb->param[i].ai();
+            heavy = parm->ai();
         }
     }
     if (heavy == NOTSET)
@@ -497,15 +497,15 @@ static void count_bonds(int atom, InteractionTypeParameters *psb, char ***atomna
     nrb   = 0;
     nrH   = 0;
     nrhv  = 0;
-    for (int i = 0; i < psb->nr; i++)
+    for (const auto &parm : psb->interactionTypes)
     {
-        if (psb->param[i].ai() == heavy)
+        if (parm.ai() == heavy)
         {
-            other = psb->param[i].aj();
+            other = parm.aj();
         }
-        else if (psb->param[i].aj() == heavy)
+        else if (parm.aj() == heavy)
         {
-            other = psb->param[i].ai();
+            other = parm.ai();
         }
         if (other != NOTSET)
         {
@@ -606,7 +606,7 @@ static real get_amass(int atom, t_atoms *at, gmx::ArrayRef<const PreprocessResid
     return mass;
 }
 
-static void my_add_param(InteractionTypeParameters *plist, int ai, int aj, real b)
+static void my_add_param(InteractionsOfType *plist, int ai, int aj, real b)
 {
     static real c[MAXFORCEPARAM] =
     { NOTSET, NOTSET, NOTSET, NOTSET, NOTSET, NOTSET };
@@ -615,7 +615,7 @@ static void my_add_param(InteractionTypeParameters *plist, int ai, int aj, real 
     add_param(plist, ai, aj, c, nullptr);
 }
 
-static void add_vsites(gmx::ArrayRef<InteractionTypeParameters> plist, int vsite_type[],
+static void add_vsites(gmx::ArrayRef<InteractionsOfType> plist, int vsite_type[],
                        int Heavy, int nrHatoms, int Hatoms[],
                        int nrheavies, int heavies[])
 {
@@ -669,15 +669,16 @@ static void add_vsites(gmx::ArrayRef<InteractionTypeParameters> plist, int vsite
                     {
                         /* find more heavy atoms */
                         other = moreheavy = NOTSET;
-                        for (int j = 0; (j < plist[F_BONDS].nr) && (moreheavy == NOTSET); j++)
+                        for (auto parm = plist[F_BONDS].interactionTypes.begin();
+                             (parm != plist[F_BONDS].interactionTypes.end()) && (moreheavy == NOTSET); parm++)
                         {
-                            if (plist[F_BONDS].param[j].ai() == heavies[0])
+                            if (parm->ai() == heavies[0])
                             {
-                                other = plist[F_BONDS].param[j].aj();
+                                other = parm->aj();
                             }
-                            else if (plist[F_BONDS].param[j].aj() == heavies[0])
+                            else if (parm->aj() == heavies[0])
                             {
-                                other = plist[F_BONDS].param[j].ai();
+                                other = parm->ai();
                             }
                             if ( (other != NOTSET) && (other != Heavy) )
                             {
@@ -721,7 +722,7 @@ static void add_vsites(gmx::ArrayRef<InteractionTypeParameters> plist, int vsite
 /* get cos(alpha) when a, b and c are given: */
 #define acosrule(a, b, c) ( (gmx::square(b)+gmx::square(c)-gmx::square(a))/(2*(b)*(c)) )
 
-static int gen_vsites_6ring(t_atoms *at, int *vsite_type[], gmx::ArrayRef<InteractionTypeParameters> plist,
+static int gen_vsites_6ring(t_atoms *at, int *vsite_type[], gmx::ArrayRef<InteractionsOfType> plist,
                             int nrfound, int *ats, real bond_cc, real bond_ch,
                             real xcom, bool bDoZ)
 {
@@ -812,7 +813,7 @@ static int gen_vsites_6ring(t_atoms *at, int *vsite_type[], gmx::ArrayRef<Intera
     return nvsite;
 }
 
-static int gen_vsites_phe(t_atoms *at, int *vsite_type[], gmx::ArrayRef<InteractionTypeParameters> plist,
+static int gen_vsites_phe(t_atoms *at, int *vsite_type[], gmx::ArrayRef<InteractionsOfType> plist,
                           int nrfound, int *ats, gmx::ArrayRef<const VirtualSiteTopology> vsitetop)
 {
     real bond_cc, bond_ch;
@@ -878,7 +879,7 @@ static int gen_vsites_trp(PreprocessingAtomTypes *atype,
                           t_symtab *symtab, int *nadd,
                           gmx::ArrayRef<const gmx::RVec> x, int *cgnr[],
                           t_atoms *at, int *vsite_type[],
-                          gmx::ArrayRef<InteractionTypeParameters> plist,
+                          gmx::ArrayRef<InteractionsOfType> plist,
                           int nrfound, int *ats, int add_shift,
                           gmx::ArrayRef<const VirtualSiteTopology> vsitetop)
 {
@@ -1152,7 +1153,7 @@ static int gen_vsites_tyr(PreprocessingAtomTypes *atype,
                           t_symtab *symtab, int *nadd,
                           gmx::ArrayRef<const gmx::RVec> x, int *cgnr[],
                           t_atoms *at, int *vsite_type[],
-                          gmx::ArrayRef<InteractionTypeParameters> plist,
+                          gmx::ArrayRef<InteractionsOfType> plist,
                           int nrfound, int *ats, int add_shift,
                           gmx::ArrayRef<const VirtualSiteTopology> vsitetop)
 {
@@ -1297,7 +1298,7 @@ static int gen_vsites_tyr(PreprocessingAtomTypes *atype,
 }
 
 static int gen_vsites_his(t_atoms *at, int *vsite_type[],
-                          gmx::ArrayRef<InteractionTypeParameters> plist,
+                          gmx::ArrayRef<InteractionsOfType> plist,
                           int nrfound, int *ats, gmx::ArrayRef<const VirtualSiteTopology> vsitetop)
 {
     int  nvsite, i;
@@ -1552,7 +1553,7 @@ static char atomnamesuffix[] = "1234";
 void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB, PreprocessingAtomTypes *atype,
                t_atoms *at, t_symtab *symtab,
                std::vector<gmx::RVec> *x,
-               gmx::ArrayRef<InteractionTypeParameters> plist, int *vsite_type[], int *cgnr[],
+               gmx::ArrayRef<InteractionsOfType> plist, int *vsite_type[], int *cgnr[],
                real mHmult, bool bVsiteAromatics,
                const char *ffdir)
 {
@@ -1568,7 +1569,6 @@ void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB, PreprocessingAtom
     char                       tpname[32], nexttpname[32];
     int                       *o2n, *newvsite_type, *newcgnr, ats[MAXATOMSPERRESIDUE];
     t_atom                    *newatom;
-    InteractionTypeParameters *params;
     char                    ***newatomname;
     char                      *resnm = nullptr;
     int                        cmplength;
@@ -1689,9 +1689,9 @@ void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB, PreprocessingAtom
 
                 cmplength = bPartial[j] ? strlen(resnm)-1 : strlen(resnm);
 
-                bFound = ((gmx_strncasecmp(resnm, resnms[j], cmplength) == 0) ||
-                          (gmx_strncasecmp(resnm, resnmsN[j], cmplength) == 0) ||
-                          (gmx_strncasecmp(resnm, resnmsC[j], cmplength) == 0));
+                bFound = ((gmx::equalCaseInsensitive(resnm, resnms[j], cmplength)) ||
+                          (gmx::equalCaseInsensitive(resnm, resnmsN[j], cmplength)) ||
+                          (gmx::equalCaseInsensitive(resnm, resnmsC[j], cmplength)));
 
                 if (bFound)
                 {
@@ -2135,51 +2135,50 @@ void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB, PreprocessingAtom
     /* now renumber all the interactions because of the added atoms */
     for (int ftype = 0; ftype < F_NRE; ftype++)
     {
-        InteractionTypeParameters *params = &(plist[ftype]);
+        InteractionsOfType *params = &(plist[ftype]);
         if (debug)
         {
-            fprintf(debug, "Renumbering %d %s\n", params->nr,
+            fprintf(debug, "Renumbering %zu %s\n", params->size(),
                     interaction_function[ftype].longname);
         }
-        for (int i = 0; i < params->nr; i++)
+        /* Horrible hacks needed here to get this to work */
+        for (auto parm = params->interactionTypes.begin(); parm != params->interactionTypes.end(); parm++)
         {
+            gmx::ArrayRef<const int> atomNumbers(parm->atoms());
+            std::vector<int> newAtomNumber;
             for (int j = 0; j < NRAL(ftype); j++)
             {
-                if (params->param[i].a[j] >= add_shift)
+                if (atomNumbers[j] >= add_shift)
                 {
                     if (debug)
                     {
-                        fprintf(debug, " [%d -> %d]", params->param[i].a[j],
-                                params->param[i].a[j]-add_shift);
+                        fprintf(debug, " [%d -> %d]", atomNumbers[j],
+                                atomNumbers[j]-add_shift);
                     }
-                    params->param[i].a[j] = params->param[i].a[j]-add_shift;
+                    newAtomNumber.emplace_back(atomNumbers[j]-add_shift);
                 }
                 else
                 {
                     if (debug)
                     {
-                        fprintf(debug, " [%d -> %d]", params->param[i].a[j],
-                                o2n[params->param[i].a[j]]);
+                        fprintf(debug, " [%d -> %d]", atomNumbers[j],
+                                o2n[atomNumbers[j]]);
                     }
-                    params->param[i].a[j] = o2n[params->param[i].a[j]];
+                    newAtomNumber.emplace_back(o2n[atomNumbers[j]]);
                 }
             }
+            *parm = InteractionOfType(newAtomNumber, parm->forceParam(), parm->interactionTypeName());
             if (debug)
             {
                 fprintf(debug, "\n");
             }
         }
     }
-    /* now check if atoms in the added constraints are in increasing order */
-    params = &(plist[F_CONSTRNC]);
-    for (int i = 0; i < params->nr; i++)
+    /* sort constraint parameters */
+    InteractionsOfType *params = &(plist[F_CONSTRNC]);
+    for (auto &type : params->interactionTypes)
     {
-        if (params->param[i].ai() > params->param[i].aj())
-        {
-            int j                     = params->param[i].aj();
-            params->param[i].aj() = params->param[i].ai();
-            params->param[i].ai() = j;
-        }
+        type.sortAtomIds();
     }
 
     /* clean up */
@@ -2188,10 +2187,10 @@ void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB, PreprocessingAtom
     /* tell the user what we did */
     fprintf(stderr, "Marked %d virtual sites\n", nvsite);
     fprintf(stderr, "Added %d dummy masses\n", nadd);
-    fprintf(stderr, "Added %d new constraints\n", plist[F_CONSTRNC].nr);
+    fprintf(stderr, "Added %zu new constraints\n", plist[F_CONSTRNC].size());
 }
 
-void do_h_mass(InteractionTypeParameters *psb, int vsite_type[], t_atoms *at, real mHmult,
+void do_h_mass(InteractionsOfType *psb, int vsite_type[], t_atoms *at, real mHmult,
                bool bDeuterate)
 {
     /* loop over all atoms */
@@ -2202,18 +2201,18 @@ void do_h_mass(InteractionTypeParameters *psb, int vsite_type[], t_atoms *at, re
         {
             /* find bonded heavy atom */
             int a = NOTSET;
-            for (int j = 0; (j < psb->nr) && (a == NOTSET); j++)
+            for (auto parm = psb->interactionTypes.begin(); (parm != psb->interactionTypes.end()) && (a == NOTSET); parm++)
             {
                 /* if other atom is not a virtual site, it is the one we want */
-                if ( (psb->param[j].ai() == i) &&
-                     !is_vsite(vsite_type[psb->param[j].aj()]) )
+                if ( (parm->ai() == i) &&
+                     !is_vsite(vsite_type[parm->aj()]) )
                 {
-                    a = psb->param[j].aj();
+                    a = parm->aj();
                 }
-                else if ( (psb->param[j].aj() == i) &&
-                          !is_vsite(vsite_type[psb->param[j].ai()]) )
+                else if ( (parm->aj() == i) &&
+                          !is_vsite(vsite_type[parm->ai()]) )
                 {
-                    a = psb->param[j].ai();
+                    a = parm->ai();
                 }
             }
             if (a == NOTSET)

@@ -50,25 +50,15 @@ struct t_atoms;
 struct t_blocka;
 struct t_excls;
 struct MoleculeInformation;
-struct t_param;
-struct InteractionTypeParameters;
+class InteractionOfType;
+struct InteractionsOfType;
 
 /* UTILITIES */
 
 int name2index(char *str, char ***typenames, int ntypes);
 
-void pr_alloc (int extra, InteractionTypeParameters *pr);
+void add_param_to_list(InteractionsOfType *list, const InteractionOfType &b);
 
-void set_p_string(t_param *p, const char *s);
-
-void cp_param(t_param *dest, const t_param *src);
-
-void add_param_to_list(InteractionTypeParameters *list, t_param *b);
-
-/* INITIATE */
-
-void init_plist(gmx::ArrayRef<InteractionTypeParameters> plist);
-void done_plist(gmx::ArrayRef<InteractionTypeParameters> plist);
 
 
 /* PRINTING */
@@ -80,7 +70,7 @@ void print_atoms(FILE *out, PreprocessingAtomTypes *atype, t_atoms *at, int *cgn
                  bool bRTPresname);
 
 void print_bondeds(FILE *out, int natoms, Directive d,
-                   int ftype, int fsubtype, gmx::ArrayRef<const InteractionTypeParameters> plist);
+                   int ftype, int fsubtype, gmx::ArrayRef<const InteractionsOfType> plist);
 
 void print_excl(FILE *out, int natoms, t_excls excls[]);
 

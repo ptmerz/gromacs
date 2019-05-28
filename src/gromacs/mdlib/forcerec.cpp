@@ -70,10 +70,8 @@
 #include "gromacs/mdlib/forcerec_threading.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/md_support.h"
-#include "gromacs/mdlib/ns.h"
 #include "gromacs/mdlib/qmmm.h"
 #include "gromacs/mdlib/rf_util.h"
-#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdlib/wall.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/fcdata.h"
@@ -204,8 +202,8 @@ check_solvent_cg(const gmx_moltype_t    *molt,
                  int                     cg0,
                  int                     nmol,
                  const unsigned char    *qm_grpnr,
-                 const t_grps           *qm_grps,
-                 t_forcerec   *          fr,
+                 const AtomGroupIndices *qm_grps,
+                 t_forcerec             *fr,
                  int                    *n_solvent_parameters,
                  solvent_parameters_t  **solvent_parameters_p,
                  int                     cginfo,
@@ -278,7 +276,7 @@ check_solvent_cg(const gmx_moltype_t    *molt,
     {
         for (j = j0; j < j1 && !qm; j++)
         {
-            qm = (qm_grpnr[j] < qm_grps->nr - 1);
+            qm = (qm_grpnr[j] < qm_grps->size() - 1);
         }
     }
     /* Cannot use solvent optimization with QM */
@@ -490,9 +488,9 @@ check_solvent(FILE  *                fp,
             for (cg_mol = 0; cg_mol < cgs->nr; cg_mol++)
             {
                 check_solvent_cg(molt, cg_mol, nmol,
-                                 mtop->groups.grpnr[egcQMMM] ?
-                                 mtop->groups.grpnr[egcQMMM]+at_offset+am : nullptr,
-                                 &mtop->groups.grps[egcQMMM],
+                                 mtop->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].empty() ?
+                                 nullptr : mtop->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].data()+at_offset+am,
+                                 &mtop->groups.groups[SimulationAtomGroupType::QuantumMechanics],
                                  fr,
                                  &n_solvent_parameters, &solvent_parameters,
                                  cginfo_mb[mb].cginfo[cgm+cg_mol],
@@ -622,17 +620,17 @@ static cginfo_mb_t *init_cginfo_mb(FILE *fplog, const gmx_mtop_t *mtop,
             {
                 a0 = cgs->index[cg];
                 a1 = cgs->index[cg+1];
-                if (getGroupType(mtop->groups, egcENER, a_offset+am+a0) !=
-                    getGroupType(mtop->groups, egcENER, a_offset   +a0))
+                if (getGroupType(mtop->groups, SimulationAtomGroupType::QuantumMechanics, a_offset+am+a0) !=
+                    getGroupType(mtop->groups, SimulationAtomGroupType::QuantumMechanics, a_offset   +a0))
                 {
                     bId = FALSE;
                 }
-                if (mtop->groups.grpnr[egcQMMM] != nullptr)
+                if (!mtop->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics].empty())
                 {
                     for (ai = a0; ai < a1; ai++)
                     {
-                        if (mtop->groups.grpnr[egcQMMM][a_offset+am+ai] !=
-                            mtop->groups.grpnr[egcQMMM][a_offset   +ai])
+                        if (mtop->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics][a_offset+am+ai] !=
+                            mtop->groups.groupNumbers[SimulationAtomGroupType::QuantumMechanics][a_offset   +ai])
                         {
                             bId = FALSE;
                         }
@@ -679,7 +677,7 @@ static cginfo_mb_t *init_cginfo_mb(FILE *fplog, const gmx_mtop_t *mtop,
                 a1 = cgs->index[cg+1];
 
                 /* Store the energy group in cginfo */
-                gid = getGroupType(mtop->groups, egcENER, a_offset+am+a0);
+                gid = getGroupType(mtop->groups, SimulationAtomGroupType::EnergyOutput, a_offset+am+a0);
                 SET_CGINFO_GID(cginfo[cgm+cg], gid);
 
                 /* Check the intra/inter charge group exclusions */
@@ -823,15 +821,15 @@ static cginfo_mb_t *init_cginfo_mb(FILE *fplog, const gmx_mtop_t *mtop,
     return cginfo_mb;
 }
 
-static int *cginfo_expand(int nmb, cginfo_mb_t *cgi_mb)
+static std::vector<int> cginfo_expand(const int          nmb,
+                                      const cginfo_mb_t *cgi_mb)
 {
-    int  ncg, mb, cg;
-    int *cginfo;
+    const int        ncg = cgi_mb[nmb - 1].cg_end;
 
-    ncg = cgi_mb[nmb-1].cg_end;
-    snew(cginfo, ncg);
-    mb = 0;
-    for (cg = 0; cg < ncg; cg++)
+    std::vector<int> cginfo(ncg);
+
+    int              mb = 0;
+    for (int cg = 0; cg < ncg; cg++)
     {
         while (cg >= cgi_mb[mb].cg_end)
         {
@@ -1027,12 +1025,11 @@ static void make_nbf_tables(FILE *fp,
      * to improve cache performance.
      */
     /* For performance reasons we want
-     * the table data to be aligned to 16-byte. The pointers could be freed
-     * but currently aren't.
+     * the table data to be aligned to 16-byte.
      */
-    snew(nbl->table_elec, 1);
-    nbl->table_elec->interaction   = GMX_TABLE_INTERACTION_ELEC;
-    nbl->table_elec->format        = nbl->table_elec_vdw->format;
+    nbl->table_elec                =
+        new t_forcetable(GMX_TABLE_INTERACTION_ELEC,
+                         nbl->table_elec_vdw->format);
     nbl->table_elec->r             = nbl->table_elec_vdw->r;
     nbl->table_elec->n             = nbl->table_elec_vdw->n;
     nbl->table_elec->scale         = nbl->table_elec_vdw->scale;
@@ -1041,9 +1038,9 @@ static void make_nbf_tables(FILE *fp,
     nbl->table_elec->stride        = nbl->table_elec->formatsize * nbl->table_elec->ninteractions;
     snew_aligned(nbl->table_elec->data, nbl->table_elec->stride*(nbl->table_elec->n+1), 32);
 
-    snew(nbl->table_vdw, 1);
-    nbl->table_vdw->interaction   = GMX_TABLE_INTERACTION_VDWREP_VDWDISP;
-    nbl->table_vdw->format        = nbl->table_elec_vdw->format;
+    nbl->table_vdw                =
+        new t_forcetable(GMX_TABLE_INTERACTION_VDWREP_VDWDISP,
+                         nbl->table_elec_vdw->format);
     nbl->table_vdw->r             = nbl->table_elec_vdw->r;
     nbl->table_vdw->n             = nbl->table_elec_vdw->n;
     nbl->table_vdw->scale         = nbl->table_elec_vdw->scale;
@@ -1627,7 +1624,8 @@ void init_forcerec(FILE                             *fp,
     gmx_bool       bGenericKernelOnly;
     gmx_bool       needGroupSchemeTables, bSomeNormalNbListsAreInUse;
     gmx_bool       bFEP_NonBonded;
-    int           *nm_ind, egp_flags;
+    int            egp_flags;
+
 
     /* By default we turn SIMD kernels on, but it might be turned off further down... */
     fr->use_simd_kernels = TRUE;
@@ -2053,13 +2051,6 @@ void init_forcerec(FILE                             *fp,
         fr->forceBufferForDirectVirialContributions = new std::vector<gmx::RVec>;
     }
 
-    if (fr->cutoff_scheme == ecutsGROUP &&
-        ncg_mtop(mtop) > fr->cg_nalloc && !DOMAINDECOMP(cr))
-    {
-        /* Count the total number of charge groups */
-        fr->cg_nalloc = ncg_mtop(mtop);
-        srenew(fr->cg_cm, fr->cg_nalloc);
-    }
     if (fr->shift_vec == nullptr)
     {
         snew(fr->shift_vec, SHIFTS);
@@ -2120,13 +2111,6 @@ void init_forcerec(FILE                             *fp,
                 fr->rlist, ic->rcoulomb, fr->bBHAM ? "BHAM" : "LJ", ic->rvdw);
     }
 
-    fr->eDispCorr = ir->eDispCorr;
-    fr->numAtomsForDispersionCorrection = mtop->natoms;
-    if (ir->eDispCorr != edispcNO)
-    {
-        set_avcsixtwelve(fp, fr, mtop);
-    }
-
     if (ir->implicit_solvent)
     {
         gmx_fatal(FARGS, "Implict solvation is no longer supported.");
@@ -2144,7 +2128,6 @@ void init_forcerec(FILE                             *fp,
     if (!needGroupSchemeTables)
     {
         bSomeNormalNbListsAreInUse = TRUE;
-        fr->nnblists               = 1;
     }
     else
     {
@@ -2167,21 +2150,7 @@ void init_forcerec(FILE                             *fp,
                 }
             }
         }
-        if (bSomeNormalNbListsAreInUse)
-        {
-            fr->nnblists = negptable + 1;
-        }
-        else
-        {
-            fr->nnblists = negptable;
-        }
-        if (fr->nnblists > 1)
-        {
-            snew(fr->gid2nblists, ir->opts.ngener*ir->opts.ngener);
-        }
     }
-
-    snew(fr->nblists, fr->nnblists);
 
     /* This code automatically gives table length tabext without cut-off's,
      * in that case grompp should already have checked that we do not need
@@ -2194,7 +2163,7 @@ void init_forcerec(FILE                             *fp,
         /* make tables for ordinary interactions */
         if (bSomeNormalNbListsAreInUse)
         {
-            make_nbf_tables(fp, ic, rtab, tabfn, nullptr, nullptr, &fr->nblists[0]);
+            make_nbf_tables(fp, ic, rtab, tabfn, nullptr, nullptr, nullptr);
             m = 1;
         }
         else
@@ -2204,7 +2173,7 @@ void init_forcerec(FILE                             *fp,
         if (negptable > 0)
         {
             /* Read the special tables for certain energy group pairs */
-            nm_ind = mtop->groups.grps[egcENER].nm_ind;
+            gmx::ArrayRef<const int> nm_ind = mtop->groups.groups[SimulationAtomGroupType::EnergyOutput];
             for (egi = 0; egi < negp_pp; egi++)
             {
                 for (egj = egi; egj < negp_pp; egj++)
@@ -2212,32 +2181,16 @@ void init_forcerec(FILE                             *fp,
                     egp_flags = ir->opts.egp_flags[GID(egi, egj, ir->opts.ngener)];
                     if ((egp_flags & EGP_TABLE) && !(egp_flags & EGP_EXCL))
                     {
-                        if (fr->nnblists > 1)
-                        {
-                            fr->gid2nblists[GID(egi, egj, ir->opts.ngener)] = m;
-                        }
                         /* Read the table file with the two energy groups names appended */
                         make_nbf_tables(fp, ic, rtab, tabfn,
-                                        *mtop->groups.grpname[nm_ind[egi]],
-                                        *mtop->groups.grpname[nm_ind[egj]],
-                                        &fr->nblists[m]);
+                                        *mtop->groups.groupNames[nm_ind[egi]],
+                                        *mtop->groups.groupNames[nm_ind[egj]],
+                                        nullptr);
                         m++;
-                    }
-                    else if (fr->nnblists > 1)
-                    {
-                        fr->gid2nblists[GID(egi, egj, ir->opts.ngener)] = 0;
                     }
                 }
             }
         }
-    }
-
-    /* Tables might not be used for the potential modifier
-     * interactions per se, but we still need them to evaluate
-     * switch/shift dispersion corrections in this case. */
-    if (fr->eDispCorr != edispcNO)
-    {
-        fr->dispersionCorrectionTable = makeDispersionCorrectionTable(fp, ic, rtab, tabfn);
     }
 
     /* We want to use unmodified tables for 1-4 coulombic
@@ -2309,11 +2262,7 @@ void init_forcerec(FILE                             *fp,
     fr->cginfo_mb = init_cginfo_mb(fp, mtop, fr, bNoSolvOpt,
                                    &bFEP_NonBonded,
                                    &fr->bExcl_IntraCGAll_InterCGNone);
-    if (DOMAINDECOMP(cr))
-    {
-        fr->cginfo = nullptr;
-    }
-    else
+    if (!DOMAINDECOMP(cr))
     {
         fr->cginfo = cginfo_expand(mtop->molblock.size(), fr->cginfo_mb);
     }
@@ -2326,19 +2275,9 @@ void init_forcerec(FILE                             *fp,
 
     fr->print_force = print_force;
 
-
-    /* coarse load balancing vars */
-    fr->t_fnbf    = 0.;
-    fr->t_wait    = 0.;
-    fr->timesteps = 0;
-
-    /* Initialize neighbor search */
-    snew(fr->ns, 1);
-    init_ns(fp, cr, fr->ns, fr, mtop);
-
     /* Initialize the thread working data for bonded interactions */
-    init_bonded_threading(fp, mtop->groups.grps[egcENER].nr,
-                          &fr->bondedThreading);
+    fr->bondedThreading =
+        init_bonded_threading(fp, mtop->groups.groups[SimulationAtomGroupType::EnergyOutput].size());
 
     fr->nthread_ewc = gmx_omp_nthreads_get(emntBonded);
     snew(fr->ewc_t, fr->nthread_ewc);
@@ -2372,6 +2311,16 @@ void init_forcerec(FILE                             *fp,
         }
     }
 
+    if (ir->eDispCorr != edispcNO)
+    {
+        fr->dispersionCorrection =
+            std::make_unique<DispersionCorrection>(*mtop, *ir, fr->bBHAM,
+                                                   fr->ntype,
+                                                   gmx::arrayRefFromArray(fr->nbfp, fr->ntype*fr->ntype*2),
+                                                   *fr->ic, tabfn);
+        fr->dispersionCorrection->print(mdlog);
+    }
+
     if (fp != nullptr)
     {
         /* Here we switch from using mdlog, which prints the newline before
@@ -2379,11 +2328,6 @@ void init_forcerec(FILE                             *fp,
          * after the paragraph, so we should add a newline here.
          */
         fprintf(fp, "\n");
-    }
-
-    if (ir->eDispCorr != edispcNO)
-    {
-        calc_enervirdiff(fp, ir->eDispCorr, fr);
     }
 }
 
@@ -2428,25 +2372,18 @@ void free_gpu_resources(t_forcerec                          *fr,
     }
 }
 
-void done_forcerec(t_forcerec *fr, int numMolBlocks, int numEnergyGroups)
+void done_forcerec(t_forcerec *fr, int numMolBlocks)
 {
     if (fr == nullptr)
     {
         // PME-only ranks don't have a forcerec
         return;
     }
-    // cginfo is dynamically allocated if no domain decomposition
-    if (fr->cginfo != nullptr)
-    {
-        sfree(fr->cginfo);
-    }
     done_cginfo_mb(fr->cginfo_mb, numMolBlocks);
     sfree(fr->nbfp);
     done_interaction_const(fr->ic);
     sfree(fr->shift_vec);
     sfree(fr->fshift);
-    sfree(fr->nblists);
-    done_ns(fr->ns, numEnergyGroups);
     sfree(fr->ewc_t);
     tear_down_bonded_threading(fr->bondedThreading);
     GMX_RELEASE_ASSERT(fr->gpuBonded == nullptr, "Should have been deleted earlier, when used");

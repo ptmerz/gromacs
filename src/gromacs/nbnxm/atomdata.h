@@ -44,6 +44,7 @@
 #include "gromacs/utility/bitmask.h"
 #include "gromacs/utility/real.h"
 
+#include "gpu_types.h"
 #include "locality.h"
 
 namespace gmx
@@ -51,15 +52,14 @@ namespace gmx
 class MDLogger;
 }
 
-struct gmx_wallcycle;
 struct nbnxn_atomdata_t;
-struct nbnxn_search;
 struct nonbonded_verlet_t;
 struct t_mdatoms;
 struct tMPI_Atomic;
 
 namespace Nbnxm
 {
+class GridSet;
 enum class KernelType;
 }
 
@@ -70,6 +70,25 @@ using AlignedVector = std::vector < T, gmx::AlignedAllocator < T>>;
 enum {
     nbatXYZ, nbatXYZQ, nbatX4, nbatX8
 };
+
+//! Stride for coordinate/force arrays with xyz coordinate storage
+static constexpr int STRIDE_XYZ  = 3;
+//! Stride for coordinate/force arrays with xyzq coordinate storage
+static constexpr int STRIDE_XYZQ = 4;
+//! Size of packs of x, y or z with SIMD 4-grouped packed coordinates/forces
+static constexpr int c_packX4    = 4;
+//! Size of packs of x, y or z with SIMD 8-grouped packed coordinates/forces
+static constexpr int c_packX8    = 8;
+//! Stridefor a pack of 4 coordinates/forces
+static constexpr int STRIDE_P4   = DIM*c_packX4;
+//! Stridefor a pack of 8 coordinates/forces
+static constexpr int STRIDE_P8   = DIM*c_packX8;
+
+//! Returns the index in a coordinate array corresponding to atom a
+template<int packSize> static inline int atom_to_x_index(int a)
+{
+    return DIM*(a & ~(packSize - 1)) + (a & (packSize - 1));
+}
 
 // Struct that holds force and energy output buffers
 struct nbnxn_atomdata_output_t
@@ -276,10 +295,10 @@ void nbnxn_atomdata_init(const gmx::MDLogger &mdlog,
                          int n_energygroups,
                          int nout);
 
-void nbnxn_atomdata_set(nbnxn_atomdata_t    *nbat,
-                        const nbnxn_search  *nbs,
-                        const t_mdatoms     *mdatoms,
-                        const int           *atinfo);
+void nbnxn_atomdata_set(nbnxn_atomdata_t     *nbat,
+                        const Nbnxm::GridSet &gridSet,
+                        const t_mdatoms      *mdatoms,
+                        const int            *atinfo);
 
 /* Copy the shift vectors to nbat */
 void nbnxn_atomdata_copy_shiftvec(gmx_bool          dynamic_box,
@@ -289,12 +308,20 @@ void nbnxn_atomdata_copy_shiftvec(gmx_bool          dynamic_box,
 /* Copy x to nbat->x.
  * FillLocal tells if the local filler particle coordinates should be zeroed.
  */
-void nbnxn_atomdata_copy_x_to_nbat_x(const nbnxn_search  *nbs,
-                                     Nbnxm::AtomLocality  locality,
-                                     gmx_bool             FillLocal,
-                                     rvec                *x,
-                                     nbnxn_atomdata_t    *nbat,
-                                     gmx_wallcycle       *wcycle);
+void nbnxn_atomdata_copy_x_to_nbat_x(const Nbnxm::GridSet &gridSet,
+                                     Nbnxm::AtomLocality   locality,
+                                     gmx_bool              FillLocal,
+                                     const rvec           *x,
+                                     nbnxn_atomdata_t     *nbat,
+                                     bool                  useGpu,
+                                     gmx_nbnxn_gpu_t      *gpu_nbv,
+                                     void                 *xPmeDevicePtr);
+
+//! Add the computed forces to \p f, an internal reduction might be performed as well
+void reduceForces(nbnxn_atomdata_t     *nbat,
+                  Nbnxm::AtomLocality   locality,
+                  const Nbnxm::GridSet &gridSet,
+                  rvec                 *f);
 
 /* Add the fshift force stored in nbat to fshift */
 void nbnxn_atomdata_add_nbat_fshift_to_fshift(const nbnxn_atomdata_t *nbat,

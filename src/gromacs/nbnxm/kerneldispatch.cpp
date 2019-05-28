@@ -40,6 +40,7 @@
 #include "gromacs/gmxlib/nonbonded/nb_kernel.h"
 #include "gromacs/gmxlib/nonbonded/nonbonded.h"
 #include "gromacs/math/vectypes.h"
+#include "gromacs/mdlib/enerdata_utils.h"
 #include "gromacs/mdlib/force.h"
 #include "gromacs/mdlib/force_flags.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
@@ -57,6 +58,8 @@
 #include "gromacs/utility/real.h"
 
 #include "kernel_common.h"
+#include "pairlistset.h"
+#include "pairlistsets.h"
 #define INCLUDE_KERNELFUNCTION_TABLES
 #include "gromacs/nbnxm/kernels_reference/kernel_ref.h"
 #ifdef GMX_NBNXN_SIMD_2XNN
@@ -140,19 +143,17 @@ reduceGroupEnergySimdBuffers(int                       numGroups,
  * \param[in]     shiftVectors  The PBC shift vectors
  * \param[in]     forceFlags    Flags that tell what to compute
  * \param[in]     clearF        Enum that tells if to clear the force output buffer
- * \param[out]    fshift        Shift force output buffer
  * \param[out]    vCoulomb      Output buffer for Coulomb energies
  * \param[out]    vVdw          Output buffer for Van der Waals energies
  */
 static void
-nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
+nbnxn_kernel_cpu(const PairlistSet              &pairlistSet,
                  const Nbnxm::KernelSetup       &kernelSetup,
                  nbnxn_atomdata_t               *nbat,
                  const interaction_const_t      &ic,
                  rvec                           *shiftVectors,
                  int                             forceFlags,
                  int                             clearF,
-                 real                           *fshift,
                  real                           *vCoulomb,
                  real                           *vVdw)
 {
@@ -234,12 +235,11 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
         GMX_RELEASE_ASSERT(false, "Unsupported VdW interaction type");
     }
 
-    int                        nnbl = pairlistSet.nnbl;
-    NbnxnPairlistCpu * const * nbl  = pairlistSet.nbl;
+    gmx::ArrayRef<const NbnxnPairlistCpu> pairlists = pairlistSet.cpuLists();
 
-    int gmx_unused             nthreads = gmx_omp_nthreads_get(emntNonbonded);
+    int gmx_unused                        nthreads = gmx_omp_nthreads_get(emntNonbonded);
 #pragma omp parallel for schedule(static) num_threads(nthreads)
-    for (int nb = 0; nb < nnbl; nb++)
+    for (int nb = 0; nb < pairlists.ssize(); nb++)
     {
         // Presently, the kernels do not call C++ code that can throw,
         // so no need for a try/catch pair in this OpenMP region.
@@ -247,23 +247,13 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
 
         if (clearF == enbvClearFYes)
         {
-            clear_f(nbat, nb, out->f.data());
+            clearForceBuffer(nbat, nb);
+
+            clear_fshift(out->fshift.data());
         }
 
-        real *fshift_p;
-        if ((forceFlags & GMX_FORCE_VIRIAL) && nnbl == 1)
-        {
-            fshift_p = fshift;
-        }
-        else
-        {
-            fshift_p = out->fshift.data();
-
-            if (clearF == enbvClearFYes)
-            {
-                clear_fshift(fshift_p);
-            }
-        }
+        // TODO: Change to reference
+        const NbnxnPairlistCpu *pairlist = &pairlists[nb];
 
         if (!(forceFlags & GMX_FORCE_ENERGY))
         {
@@ -271,28 +261,25 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
             switch (kernelSetup.kernelType)
             {
                 case Nbnxm::KernelType::Cpu4x4_PlainC:
-                    nbnxn_kernel_noener_ref[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxn_kernel_noener_ref[coulkt][vdwkt](pairlist, nbat,
                                                            &ic,
                                                            shiftVectors,
-                                                           out->f.data(),
-                                                           fshift_p);
+                                                           out);
                     break;
 #ifdef GMX_NBNXN_SIMD_2XNN
                 case Nbnxm::KernelType::Cpu4xN_Simd_2xNN:
-                    nbnxm_kernel_noener_simd_2xmm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_noener_simd_2xmm[coulkt][vdwkt](pairlist, nbat,
                                                                  &ic,
                                                                  shiftVectors,
-                                                                 out->f.data(),
-                                                                 fshift_p);
+                                                                 out);
                     break;
 #endif
 #ifdef GMX_NBNXN_SIMD_4XN
                 case Nbnxm::KernelType::Cpu4xN_Simd_4xN:
-                    nbnxm_kernel_noener_simd_4xm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_noener_simd_4xm[coulkt][vdwkt](pairlist, nbat,
                                                                 &ic,
                                                                 shiftVectors,
-                                                                out->f.data(),
-                                                                fshift_p);
+                                                                out);
                     break;
 #endif
                 default:
@@ -308,34 +295,25 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
             switch (kernelSetup.kernelType)
             {
                 case Nbnxm::KernelType::Cpu4x4_PlainC:
-                    nbnxn_kernel_ener_ref[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxn_kernel_ener_ref[coulkt][vdwkt](pairlist, nbat,
                                                          &ic,
                                                          shiftVectors,
-                                                         out->f.data(),
-                                                         fshift_p,
-                                                         out->Vvdw.data(),
-                                                         out->Vc.data());
+                                                         out);
                     break;
 #ifdef GMX_NBNXN_SIMD_2XNN
                 case Nbnxm::KernelType::Cpu4xN_Simd_2xNN:
-                    nbnxm_kernel_ener_simd_2xmm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_ener_simd_2xmm[coulkt][vdwkt](pairlist, nbat,
                                                                &ic,
                                                                shiftVectors,
-                                                               out->f.data(),
-                                                               fshift_p,
-                                                               out->Vvdw.data(),
-                                                               out->Vc.data());
+                                                               out);
                     break;
 #endif
 #ifdef GMX_NBNXN_SIMD_4XN
                 case Nbnxm::KernelType::Cpu4xN_Simd_4xN:
-                    nbnxm_kernel_ener_simd_4xm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_ener_simd_4xm[coulkt][vdwkt](pairlist, nbat,
                                                               &ic,
                                                               shiftVectors,
-                                                              out->f.data(),
-                                                              fshift_p,
-                                                              out->Vvdw.data(),
-                                                              out->Vc.data());
+                                                              out);
                     break;
 #endif
                 default:
@@ -353,36 +331,27 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
             {
                 case Nbnxm::KernelType::Cpu4x4_PlainC:
                     unrollj = c_nbnxnCpuIClusterSize;
-                    nbnxn_kernel_energrp_ref[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxn_kernel_energrp_ref[coulkt][vdwkt](pairlist, nbat,
                                                             &ic,
                                                             shiftVectors,
-                                                            out->f.data(),
-                                                            fshift_p,
-                                                            out->Vvdw.data(),
-                                                            out->Vc.data());
+                                                            out);
                     break;
 #ifdef GMX_NBNXN_SIMD_2XNN
                 case Nbnxm::KernelType::Cpu4xN_Simd_2xNN:
                     unrollj = GMX_SIMD_REAL_WIDTH/2;
-                    nbnxm_kernel_energrp_simd_2xmm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_energrp_simd_2xmm[coulkt][vdwkt](pairlist, nbat,
                                                                   &ic,
                                                                   shiftVectors,
-                                                                  out->f.data(),
-                                                                  fshift_p,
-                                                                  out->VSvdw.data(),
-                                                                  out->VSc.data());
+                                                                  out);
                     break;
 #endif
 #ifdef GMX_NBNXN_SIMD_4XN
                 case Nbnxm::KernelType::Cpu4xN_Simd_4xN:
                     unrollj = GMX_SIMD_REAL_WIDTH;
-                    nbnxm_kernel_energrp_simd_4xm[coulkt][vdwkt](nbl[nb], nbat,
+                    nbnxm_kernel_energrp_simd_4xm[coulkt][vdwkt](pairlist, nbat,
                                                                  &ic,
                                                                  shiftVectors,
-                                                                 out->f.data(),
-                                                                 fshift_p,
-                                                                 out->VSvdw.data(),
-                                                                 out->VSc.data());
+                                                                 out);
                     break;
 #endif
                 default:
@@ -417,12 +386,12 @@ nbnxn_kernel_cpu(const nbnxn_pairlist_set_t     &pairlistSet,
 
     if (forceFlags & GMX_FORCE_ENERGY)
     {
-        reduce_energies_over_lists(nbat, nnbl, vVdw, vCoulomb);
+        reduce_energies_over_lists(nbat, pairlists.ssize(), vVdw, vCoulomb);
     }
 }
 
 static void accountFlops(t_nrnb                           *nrnb,
-                         const nbnxn_pairlist_set_t       &pairlistSet,
+                         const PairlistSet                &pairlistSet,
                          const nonbonded_verlet_t         &nbv,
                          const interaction_const_t        &ic,
                          const int                         forceFlags)
@@ -452,31 +421,31 @@ static void accountFlops(t_nrnb                           *nrnb,
     }
 
     inc_nrnb(nrnb, enr_nbnxn_kernel_ljc,
-             pairlistSet.natpair_ljq);
+             pairlistSet.natpair_ljq_);
     inc_nrnb(nrnb, enr_nbnxn_kernel_lj,
-             pairlistSet.natpair_lj);
+             pairlistSet.natpair_lj_);
     /* The Coulomb-only kernels are offset -eNR_NBNXN_LJ_RF+eNR_NBNXN_RF */
     inc_nrnb(nrnb, enr_nbnxn_kernel_ljc-eNR_NBNXN_LJ_RF+eNR_NBNXN_RF,
-             pairlistSet.natpair_q);
+             pairlistSet.natpair_q_);
 
     const bool calcEnergy = ((forceFlags & GMX_FORCE_ENERGY) != 0);
     if (ic.vdw_modifier == eintmodFORCESWITCH)
     {
         /* We add up the switch cost separately */
         inc_nrnb(nrnb, eNR_NBNXN_ADD_LJ_FSW + (calcEnergy ? 1 : 0),
-                 pairlistSet.natpair_ljq + pairlistSet.natpair_lj);
+                 pairlistSet.natpair_ljq_ + pairlistSet.natpair_lj_);
     }
     if (ic.vdw_modifier == eintmodPOTSWITCH)
     {
         /* We add up the switch cost separately */
         inc_nrnb(nrnb, eNR_NBNXN_ADD_LJ_PSW + (calcEnergy ? 1 : 0),
-                 pairlistSet.natpair_ljq + pairlistSet.natpair_lj);
+                 pairlistSet.natpair_ljq_ + pairlistSet.natpair_lj_);
     }
     if (ic.vdwtype == evdwPME)
     {
         /* We add up the LJ Ewald cost separately */
         inc_nrnb(nrnb, eNR_NBNXN_ADD_LJ_EWALD + (calcEnergy ? 1 : 0),
-                 pairlistSet.natpair_ljq + pairlistSet.natpair_lj);
+                 pairlistSet.natpair_ljq_ + pairlistSet.natpair_lj_);
     }
 }
 
@@ -489,7 +458,7 @@ nonbonded_verlet_t::dispatchNonbondedKernel(Nbnxm::InteractionLocality iLocality
                                             gmx_enerdata_t            *enerd,
                                             t_nrnb                    *nrnb)
 {
-    const nbnxn_pairlist_set_t &pairlistSet = pairlistSets().pairlistSet(iLocality);
+    const PairlistSet &pairlistSet = pairlistSets().pairlistSet(iLocality);
 
     switch (kernelSetup().kernelType)
     {
@@ -503,11 +472,10 @@ nonbonded_verlet_t::dispatchNonbondedKernel(Nbnxm::InteractionLocality iLocality
                              fr->shift_vec,
                              forceFlags,
                              clearF,
-                             fr->fshift[0],
-                             enerd->grpp.ener[egCOULSR],
+                             enerd->grpp.ener[egCOULSR].data(),
                              fr->bBHAM ?
-                             enerd->grpp.ener[egBHAMSR] :
-                             enerd->grpp.ener[egLJSR]);
+                             enerd->grpp.ener[egBHAMSR].data() :
+                             enerd->grpp.ener[egLJSR].data());
             break;
 
         case Nbnxm::KernelType::Gpu8x8x8:
@@ -515,17 +483,17 @@ nonbonded_verlet_t::dispatchNonbondedKernel(Nbnxm::InteractionLocality iLocality
             break;
 
         case Nbnxm::KernelType::Cpu8x8x8_PlainC:
-            nbnxn_kernel_gpu_ref(pairlistSet.nblGpu[0],
+            nbnxn_kernel_gpu_ref(pairlistSet.gpuList(),
                                  nbat.get(), &ic,
                                  fr->shift_vec,
                                  forceFlags,
                                  clearF,
                                  nbat->out[0].f,
                                  fr->fshift[0],
-                                 enerd->grpp.ener[egCOULSR],
+                                 enerd->grpp.ener[egCOULSR].data(),
                                  fr->bBHAM ?
-                                 enerd->grpp.ener[egBHAMSR] :
-                                 enerd->grpp.ener[egLJSR]);
+                                 enerd->grpp.ener[egBHAMSR].data() :
+                                 enerd->grpp.ener[egLJSR].data());
             break;
 
         default:
@@ -548,10 +516,10 @@ nonbonded_verlet_t::dispatchFreeEnergyKernel(Nbnxm::InteractionLocality  iLocali
                                              const int                   forceFlags,
                                              t_nrnb                     *nrnb)
 {
-    const gmx::ArrayRef<t_nblist const * const > nbl_fep = pairlistSets().pairlistSet(iLocality).nbl_fep;
+    const auto nbl_fep = pairlistSets().pairlistSet(iLocality).fepLists();
 
     /* When the first list is empty, all are empty and there is nothing to do */
-    if (nbl_fep[0]->nrj == 0)
+    if (!pairlistSets().params().haveFep || nbl_fep[0]->nrj == 0)
     {
         return;
     }
@@ -580,8 +548,8 @@ nonbonded_verlet_t::dispatchFreeEnergyKernel(Nbnxm::InteractionLocality  iLocali
     kernel_data.lambda = lambda;
     kernel_data.dvdl   = dvdl_nb;
 
-    kernel_data.energygrp_elec = enerd->grpp.ener[egCOULSR];
-    kernel_data.energygrp_vdw  = enerd->grpp.ener[egLJSR];
+    kernel_data.energygrp_elec = enerd->grpp.ener[egCOULSR].data();
+    kernel_data.energygrp_vdw  = enerd->grpp.ener[egLJSR].data();
 
     GMX_ASSERT(gmx_omp_nthreads_get(emntNonbonded) == nbl_fep.ssize(), "Number of lists should be same as number of NB threads");
 
@@ -590,7 +558,7 @@ nonbonded_verlet_t::dispatchFreeEnergyKernel(Nbnxm::InteractionLocality  iLocali
     {
         try
         {
-            gmx_nb_free_energy_kernel(nbl_fep[th],
+            gmx_nb_free_energy_kernel(nbl_fep[th].get(),
                                       x, f, fr, &mdatoms, &kernel_data, nrnb);
         }
         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR;
@@ -615,11 +583,11 @@ nonbonded_verlet_t::dispatchFreeEnergyKernel(Nbnxm::InteractionLocality  iLocali
         real lam_i[efptNR];
         kernel_data.flags          = (donb_flags & ~(GMX_NONBONDED_DO_FORCE | GMX_NONBONDED_DO_SHIFTFORCE)) | GMX_NONBONDED_DO_FOREIGNLAMBDA;
         kernel_data.lambda         = lam_i;
-        kernel_data.energygrp_elec = enerd->foreign_grpp.ener[egCOULSR];
-        kernel_data.energygrp_vdw  = enerd->foreign_grpp.ener[egLJSR];
+        kernel_data.energygrp_elec = enerd->foreign_grpp.ener[egCOULSR].data();
+        kernel_data.energygrp_vdw  = enerd->foreign_grpp.ener[egLJSR].data();
         /* Note that we add to kernel_data.dvdl, but ignore the result */
 
-        for (int i = 0; i < enerd->n_lambda; i++)
+        for (size_t i = 0; i < enerd->enerpart_lambda.size(); i++)
         {
             for (int j = 0; j < efptNR; j++)
             {
@@ -631,7 +599,7 @@ nonbonded_verlet_t::dispatchFreeEnergyKernel(Nbnxm::InteractionLocality  iLocali
             {
                 try
                 {
-                    gmx_nb_free_energy_kernel(nbl_fep[th],
+                    gmx_nb_free_energy_kernel(nbl_fep[th].get(),
                                               x, f, fr, &mdatoms, &kernel_data, nrnb);
                 }
                 GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR;

@@ -672,7 +672,7 @@ void print_top_mols(FILE *out,
 
 void write_top(FILE *out, const char *pr, const char *molname,
                t_atoms *at, bool bRTPresname,
-               int bts[], gmx::ArrayRef<const InteractionTypeParameters> plist, t_excls excls[],
+               int bts[], gmx::ArrayRef<const InteractionsOfType> plist, t_excls excls[],
                PreprocessingAtomTypes *atype, int *cgnr, int nrexcl)
 /* NOTE: nrexcl is not the size of *excl! */
 {
@@ -711,7 +711,7 @@ void write_top(FILE *out, const char *pr, const char *molname,
 
 
 
-static void do_ssbonds(InteractionTypeParameters *ps, t_atoms *atoms,
+static void do_ssbonds(InteractionsOfType *ps, t_atoms *atoms,
                        gmx::ArrayRef<const DisulfideBond> ssbonds, bool bAllowMissing)
 {
     for (const auto &bond : ssbonds)
@@ -727,11 +727,11 @@ static void do_ssbonds(InteractionTypeParameters *ps, t_atoms *atoms,
             gmx_fatal(FARGS, "Trying to make impossible special bond (%s-%s)!",
                       bond.firstAtom.c_str(), bond.secondAtom.c_str());
         }
-        add_param(ps, ai, aj, nullptr, nullptr);
+        add_param(ps, ai, aj, {}, nullptr);
     }
 }
 
-static void at2bonds(InteractionTypeParameters *psb, gmx::ArrayRef<MoleculePatchDatabase> globalPatches,
+static void at2bonds(InteractionsOfType *psb, gmx::ArrayRef<MoleculePatchDatabase> globalPatches,
                      t_atoms *atoms,
                      gmx::ArrayRef<const gmx::RVec> x,
                      real long_bond_dist, real short_bond_dist)
@@ -780,7 +780,7 @@ static void at2bonds(InteractionTypeParameters *psb, gmx::ArrayRef<MoleculePatch
                     fprintf(stderr, "Warning: Short Bond (%d-%d = %g nm)\n",
                             ai+1, aj+1, std::sqrt(dist2));
                 }
-                add_param(psb, ai, aj, nullptr, patch.s.c_str());
+                add_param(psb, ai, aj, {}, patch.s.c_str());
             }
         }
         /* add bonds from list of hacks (each added atom gets a bond) */
@@ -794,15 +794,15 @@ static void at2bonds(InteractionTypeParameters *psb, gmx::ArrayRef<MoleculePatch
                 {
                     switch (patch.tp)
                     {
-                        case 9 :                                        /* COOH terminus */
-                            add_param(psb, i, i+1, nullptr, nullptr);   /* C-O  */
-                            add_param(psb, i, i+2, nullptr, nullptr);   /* C-OA */
-                            add_param(psb, i+2, i+3, nullptr, nullptr); /* OA-H */
+                        case 9 :                                   /* COOH terminus */
+                            add_param(psb, i, i+1, {}, nullptr);   /* C-O  */
+                            add_param(psb, i, i+2, {}, nullptr);   /* C-OA */
+                            add_param(psb, i+2, i+3, {}, nullptr); /* OA-H */
                             break;
                         default:
                             for (int k = 0; (k < patch.nr); k++)
                             {
-                                add_param(psb, i, i+k+1, nullptr, nullptr);
+                                add_param(psb, i, i+k+1, {}, nullptr);
                             }
                     }
                 }
@@ -813,65 +813,51 @@ static void at2bonds(InteractionTypeParameters *psb, gmx::ArrayRef<MoleculePatch
     }
 }
 
-static int pcompar(const void *a, const void *b)
+static bool pcompar(const InteractionOfType &a, const InteractionOfType &b)
 {
-    const t_param *pa, *pb;
-    int            d;
-    pa = static_cast<const t_param *>(a);
-    pb = static_cast<const t_param *>(b);
+    int                d;
 
-    d = pa->a[0] - pb->a[0];
-    if (d == 0)
+    if ((d = a.ai() - b.ai()) != 0)
     {
-        d = pa->a[1] - pb->a[1];
+        return d < 0;
     }
-    if (d == 0)
+    else if ((d = a.aj() - b.aj()) != 0)
     {
-        return strlen(pb->s) - strlen(pa->s);
+        return d < 0;
     }
     else
     {
-        return d;
+        return a.interactionTypeName().length() > b.interactionTypeName().length();
     }
 }
 
-static void clean_bonds(InteractionTypeParameters *ps)
+static void clean_bonds(InteractionsOfType *ps)
 {
-    int     i, j;
-    int     a;
-
-    if (ps->nr > 0)
+    if (ps->size() > 0)
     {
-        /* swap atomnumbers in bond if first larger than second: */
-        for (i = 0; (i < ps->nr); i++)
-        {
-            if (ps->param[i].a[1] < ps->param[i].a[0])
-            {
-                a                 = ps->param[i].a[0];
-                ps->param[i].a[0] = ps->param[i].a[1];
-                ps->param[i].a[1] = a;
-            }
-        }
-
         /* Sort bonds */
-        qsort(ps->param, ps->nr, static_cast<size_t>(sizeof(ps->param[0])), pcompar);
+        for (auto &bond : ps->interactionTypes)
+        {
+            bond.sortAtomIds();
+        }
+        std::sort(ps->interactionTypes.begin(), ps->interactionTypes.end(), pcompar);
 
         /* remove doubles, keep the first one always. */
-        j = 1;
-        for (i = 1; (i < ps->nr); i++)
+        int oldNumber = ps->size();
+        for (auto parm = ps->interactionTypes.begin() + 1; parm != ps->interactionTypes.end(); )
         {
-            if ((ps->param[i].a[0] != ps->param[j-1].a[0]) ||
-                (ps->param[i].a[1] != ps->param[j-1].a[1]) )
+            auto prev = parm - 1;
+            if (parm->ai() == prev->ai() &&
+                parm->aj() == prev->aj())
             {
-                if (j != i)
-                {
-                    cp_param(&(ps->param[j]), &(ps->param[i]));
-                }
-                j++;
+                parm = ps->interactionTypes.erase(parm);
+            }
+            else
+            {
+                ++parm;
             }
         }
-        fprintf(stderr, "Number of bonds was %d, now %d\n", ps->nr, j);
-        ps->nr = j;
+        fprintf(stderr, "Number of bonds was %d, now %zu\n", oldNumber, ps->size());
     }
     else
     {
@@ -1157,10 +1143,8 @@ static bool atomname_cmp_nr(const char *anm, const MoleculePatch *patch, int *nr
         }
         else
         {
-            std::string tmp = anm;
-            tmp.erase(tmp.end() - 1);
-            return (tmp.length() == patch->nname.length() &&
-                    gmx::equalCaseInsensitive(tmp, patch->nname));
+            return (strlen(anm) == patch->nname.length() + 1 &&
+                    gmx_strncasecmp(anm, patch->nname.c_str(), patch->nname.length()) == 0);
         }
     }
 }
@@ -1348,7 +1332,7 @@ void match_atomnames_with_rtp(gmx::ArrayRef<PreprocessResidue>     usedPpResidue
 }
 
 #define NUM_CMAP_ATOMS 5
-static void gen_cmap(InteractionTypeParameters *psb, gmx::ArrayRef<const PreprocessResidue> usedPpResidues, t_atoms *atoms)
+static void gen_cmap(InteractionsOfType *psb, gmx::ArrayRef<const PreprocessResidue> usedPpResidues, t_atoms *atoms)
 {
     int         residx;
     const char *ptr;
@@ -1478,7 +1462,7 @@ void pdb2top(FILE *top_file, const char *posre_fn, const char *molname,
              bool bDeuterate, bool bChargeGroups, bool bCmap,
              bool bRenumRes, bool bRTPresname)
 {
-    std::array<InteractionTypeParameters, F_NRE> plist;
+    std::array<InteractionsOfType, F_NRE>        plist;
     t_excls                                     *excls;
     t_nextnb                                     nnb;
     int                                         *cgnr;
@@ -1486,7 +1470,6 @@ void pdb2top(FILE *top_file, const char *posre_fn, const char *molname,
     int                                          i, nmissat;
     int                                          bts[ebtsNR];
 
-    init_plist(plist);
     ResidueType rt;
 
     /* Make bonds */
@@ -1548,10 +1531,10 @@ void pdb2top(FILE *top_file, const char *posre_fn, const char *molname,
     if (bCmap)
     {
         gen_cmap(&(plist[F_CMAP]), usedPpResidues, atoms);
-        if (plist[F_CMAP].nr > 0)
+        if (plist[F_CMAP].size() > 0)
         {
-            fprintf(stderr, "There are %4d cmap torsion pairs\n",
-                    plist[F_CMAP].nr);
+            fprintf(stderr, "There are %4zu cmap torsion pairs\n",
+                    plist[F_CMAP].size());
         }
     }
 
@@ -1566,17 +1549,17 @@ void pdb2top(FILE *top_file, const char *posre_fn, const char *molname,
     /* clean_bonds(&(plist[F_BONDS]));*/
 
     fprintf(stderr,
-            "There are %4d dihedrals, %4d impropers, %4d angles\n"
-            "          %4d pairs,     %4d bonds and  %4d virtual sites\n",
-            plist[F_PDIHS].nr, plist[F_IDIHS].nr, plist[F_ANGLES].nr,
-            plist[F_LJ14].nr, plist[F_BONDS].nr,
-            plist[F_VSITE2].nr +
-            plist[F_VSITE3].nr +
-            plist[F_VSITE3FD].nr +
-            plist[F_VSITE3FAD].nr +
-            plist[F_VSITE3OUT].nr +
-            plist[F_VSITE4FD].nr +
-            plist[F_VSITE4FDN].nr );
+            "There are %4zu dihedrals, %4zu impropers, %4zu angles\n"
+            "          %4zu pairs,     %4zu bonds and  %4zu virtual sites\n",
+            plist[F_PDIHS].size(), plist[F_IDIHS].size(), plist[F_ANGLES].size(),
+            plist[F_LJ14].size(), plist[F_BONDS].size(),
+            plist[F_VSITE2].size() +
+            plist[F_VSITE3].size() +
+            plist[F_VSITE3FD].size() +
+            plist[F_VSITE3FAD].size() +
+            plist[F_VSITE3OUT].size() +
+            plist[F_VSITE4FD].size() +
+            plist[F_VSITE4FDN].size() );
 
     print_sums(atoms, FALSE);
 
@@ -1612,10 +1595,6 @@ void pdb2top(FILE *top_file, const char *posre_fn, const char *molname,
 
     /* we should clean up hb and restp here, but that is a *L*O*T* of work! */
     sfree(cgnr);
-    for (i = 0; i < F_NRE; i++)
-    {
-        sfree(plist[i].param);
-    }
     for (i = 0; i < atoms->nr; i++)
     {
         sfree(excls[i].e);

@@ -80,9 +80,8 @@
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/perf_est.h"
 #include "gromacs/mdlib/qmmm.h"
-#include "gromacs/mdlib/sim_util.h"
 #include "gromacs/mdlib/vsite.h"
-#include "gromacs/mdrunutility/mdmodules.h"
+#include "gromacs/mdrun/mdmodules.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/nblist.h"
@@ -105,9 +104,129 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
 
+/* TODO The implementation details should move to their own source file. */
+InteractionOfType::InteractionOfType(gmx::ArrayRef<const int>  atoms,
+                                     gmx::ArrayRef<const real> params,
+                                     const std::string        &name)
+    : atoms_(atoms.begin(), atoms.end()),
+      interactionTypeName_(name)
+{
+    GMX_RELEASE_ASSERT(params.size() <= forceParam_.size(),
+                       gmx::formatString("Cannot have more parameters than the maximum number possible (%d)", MAXFORCEPARAM).c_str());
+    auto forceParamIt = forceParam_.begin();
+    for (const auto param : params)
+    {
+        *forceParamIt++ = param;
+    }
+    while (forceParamIt != forceParam_.end())
+    {
+        *forceParamIt++ = NOTSET;
+    }
+}
+
+const int &InteractionOfType::ai() const
+{
+    GMX_RELEASE_ASSERT(!atoms_.empty(), "Need to have at least one atom set");
+    return atoms_[0];
+}
+
+const int &InteractionOfType::aj() const
+{
+    GMX_RELEASE_ASSERT(atoms_.size() > 1, "Need to have at least two atoms set");
+    return atoms_[1];
+}
+
+const int &InteractionOfType::ak() const
+{
+    GMX_RELEASE_ASSERT(atoms_.size() > 2, "Need to have at least three atoms set");
+    return atoms_[2];
+}
+
+const int &InteractionOfType::al() const
+{
+    GMX_RELEASE_ASSERT(atoms_.size() > 3, "Need to have at least four atoms set");
+    return atoms_[3];
+}
+
+const int &InteractionOfType::am() const
+{
+    GMX_RELEASE_ASSERT(atoms_.size() > 4, "Need to have at least five atoms set");
+    return atoms_[4];
+}
+
+const real &InteractionOfType::c0() const
+{
+    return forceParam_[0];
+}
+
+const real &InteractionOfType::c1() const
+{
+    return forceParam_[1];
+}
+
+const real &InteractionOfType::c2() const
+{
+    return forceParam_[2];
+}
+
+const std::string &InteractionOfType::interactionTypeName() const
+{
+    return interactionTypeName_;
+}
+
+void InteractionOfType::sortBondAtomIds()
+{
+    if (aj() < ai())
+    {
+        std::swap(atoms_[0], atoms_[1]);
+    }
+}
+
+void InteractionOfType::sortAngleAtomIds()
+{
+    if (ak() < ai())
+    {
+        std::swap(atoms_[0], atoms_[2]);
+    }
+}
+
+void InteractionOfType::sortDihedralAtomIds()
+{
+    if (al() < ai())
+    {
+        std::swap(atoms_[0], atoms_[3]);
+        std::swap(atoms_[1], atoms_[2]);
+    }
+}
+
+void InteractionOfType::sortAtomIds()
+{
+    if (isBond())
+    {
+        sortBondAtomIds();
+    }
+    else if (isAngle())
+    {
+        sortAngleAtomIds();
+    }
+    else if (isDihedral())
+    {
+        sortDihedralAtomIds();
+    }
+    else
+    {
+        GMX_THROW(gmx::InternalError("Can not sort parameters other than bonds, angles or dihedrals"));
+    }
+};
+
+void InteractionOfType::setForceParameter(int pos, real value)
+{
+    GMX_RELEASE_ASSERT(pos < MAXFORCEPARAM, "Can't set parameter beyond the maximum number of parameters");
+    forceParam_[pos] = value;
+}
+
 void MoleculeInformation::initMolInfo()
 {
-    init_plist(plist);
     init_block(&cgs);
     init_block(&mols);
     init_blocka(&excls);
@@ -117,7 +236,6 @@ void MoleculeInformation::initMolInfo()
 void MoleculeInformation::partialCleanUp()
 {
     done_block(&mols);
-    done_plist(plist);
 }
 
 void MoleculeInformation::fullCleanUp()
@@ -125,7 +243,6 @@ void MoleculeInformation::fullCleanUp()
     done_atom (&atoms);
     done_block(&cgs);
     done_block(&mols);
-    done_plist(plist);
 }
 
 static int rm_interactions(int ifunc, gmx::ArrayRef<MoleculeInformation> mols)
@@ -134,8 +251,8 @@ static int rm_interactions(int ifunc, gmx::ArrayRef<MoleculeInformation> mols)
     /* For all the molecule types */
     for (auto &mol : mols)
     {
-        n                  += mol.plist[ifunc].nr;
-        mol.plist[ifunc].nr = 0;
+        n                  += mol.interactions[ifunc].size();
+        mol.interactions[ifunc].interactionTypes.clear();
     }
     return n;
 }
@@ -203,10 +320,10 @@ static void check_eg_vs_cg(gmx_mtop_t *mtop)
             {
                 /* Get the energy group of the first atom in this charge group */
                 firstj  = astart + molt->cgs.index[cg];
-                firsteg = getGroupType(mtop->groups, egcENER, firstj);
+                firsteg = getGroupType(mtop->groups, SimulationAtomGroupType::EnergyOutput, firstj);
                 for (j = molt->cgs.index[cg]+1; j < molt->cgs.index[cg+1]; j++)
                 {
-                    eg = getGroupType(mtop->groups, egcENER, astart+j);
+                    eg = getGroupType(mtop->groups, SimulationAtomGroupType::EnergyOutput, astart+j);
                     if (eg != firsteg)
                     {
                         gmx_fatal(FARGS, "atoms %d and %d in charge group %d of molecule type '%s' are in different energy groups",
@@ -433,7 +550,7 @@ static int nint_ftype(gmx_mtop_t *mtop, gmx::ArrayRef<const MoleculeInformation>
     int nint = 0;
     for (const gmx_molblock_t &molb : mtop->molblock)
     {
-        nint += molb.nmol*mi[molb.type].plist[ftype].nr;
+        nint += molb.nmol*mi[molb.type].interactions[ftype].size();
     }
 
     return nint;
@@ -510,7 +627,7 @@ new_status(const char *topfile, const char *topppfile, const char *confin,
            PreprocessingAtomTypes *atypes, gmx_mtop_t *sys,
            std::vector<MoleculeInformation> *mi,
            std::unique_ptr<MoleculeInformation> *intermolecular_interactions,
-           gmx::ArrayRef<InteractionTypeParameters> plist,
+           gmx::ArrayRef<InteractionsOfType> interactions,
            int *comb, double *reppow, real *fudgeQQ,
            gmx_bool bMorse,
            warninp *wi)
@@ -523,7 +640,7 @@ new_status(const char *topfile, const char *topppfile, const char *confin,
 
     /* TOPOLOGY processing */
     sys->name = do_top(bVerbose, topfile, topppfile, opts, bZero, &(sys->symtab),
-                       plist, comb, reppow, fudgeQQ,
+                       interactions, comb, reppow, fudgeQQ,
                        atypes, mi, intermolecular_interactions,
                        ir,
                        &molblock,
@@ -815,7 +932,7 @@ static void cont_status(const char *slog, const char *ener,
 
     if ((ir->epc != epcNO  || ir->etc == etcNOSEHOOVER) && ener)
     {
-        get_enx_state(ener, use_time, &sys->groups, ir, state);
+        get_enx_state(ener, use_time, sys->groups, ir, state);
         preserve_box_shape(ir, state->box_rel, state->boxv);
     }
 }
@@ -836,7 +953,7 @@ static void read_posres(gmx_mtop_t *mtop,
     matrix              box, invbox;
     int                 natoms, npbcdim = 0;
     char                warn_buf[STRLEN];
-    int                 a, i, ai, j, k, nat_molb;
+    int                 a, nat_molb;
     t_atom             *atom;
 
     snew(top, 1);
@@ -855,7 +972,7 @@ static void read_posres(gmx_mtop_t *mtop,
     if (rc_scaling != erscNO)
     {
         copy_mat(box, invbox);
-        for (j = npbcdim; j < DIM; j++)
+        for (int j = npbcdim; j < DIM; j++)
         {
             clear_rvec(invbox[j]);
             invbox[j][j] = 1;
@@ -871,14 +988,14 @@ static void read_posres(gmx_mtop_t *mtop,
     for (gmx_molblock_t &molb : mtop->molblock)
     {
         nat_molb = molb.nmol*mtop->moltype[molb.type].atoms.nr;
-        const InteractionTypeParameters *pr   = &(molinfo[molb.type].plist[F_POSRES]);
-        const InteractionTypeParameters *prfb = &(molinfo[molb.type].plist[F_FBPOSRES]);
-        if (pr->nr > 0 || prfb->nr > 0)
+        const InteractionsOfType *pr   = &(molinfo[molb.type].interactions[F_POSRES]);
+        const InteractionsOfType *prfb = &(molinfo[molb.type].interactions[F_FBPOSRES]);
+        if (pr->size() > 0 || prfb->size() > 0)
         {
             atom = mtop->moltype[molb.type].atoms.atom;
-            for (i = 0; (i < pr->nr); i++)
+            for (const auto &restraint : pr->interactionTypes)
             {
-                ai = pr->param[i].ai();
+                int ai = restraint.ai();
                 if (ai >= natoms)
                 {
                     gmx_fatal(FARGS, "Position restraint atom index (%d) in moltype '%s' is larger than number of atoms in %s (%d).\n",
@@ -888,7 +1005,7 @@ static void read_posres(gmx_mtop_t *mtop,
                 if (rc_scaling == erscCOM)
                 {
                     /* Determine the center of mass of the posres reference coordinates */
-                    for (j = 0; j < npbcdim; j++)
+                    for (int j = 0; j < npbcdim; j++)
                     {
                         sum[j] += atom[ai].m*x[a+ai][j];
                     }
@@ -896,9 +1013,9 @@ static void read_posres(gmx_mtop_t *mtop,
                 }
             }
             /* Same for flat-bottomed posres, but do not count an atom twice for COM */
-            for (i = 0; (i < prfb->nr); i++)
+            for (const auto &restraint : prfb->interactionTypes)
             {
-                ai = prfb->param[i].ai();
+                int ai = restraint.ai();
                 if (ai >= natoms)
                 {
                     gmx_fatal(FARGS, "Position restraint atom index (%d) in moltype '%s' is larger than number of atoms in %s (%d).\n",
@@ -907,7 +1024,7 @@ static void read_posres(gmx_mtop_t *mtop,
                 if (rc_scaling == erscCOM && !hadAtom[ai])
                 {
                     /* Determine the center of mass of the posres reference coordinates */
-                    for (j = 0; j < npbcdim; j++)
+                    for (int j = 0; j < npbcdim; j++)
                     {
                         sum[j] += atom[ai].m*x[a+ai][j];
                     }
@@ -917,7 +1034,7 @@ static void read_posres(gmx_mtop_t *mtop,
             if (!bTopB)
             {
                 molb.posres_xA.resize(nat_molb);
-                for (i = 0; i < nat_molb; i++)
+                for (int i = 0; i < nat_molb; i++)
                 {
                     copy_rvec(x[a+i], molb.posres_xA[i]);
                 }
@@ -925,7 +1042,7 @@ static void read_posres(gmx_mtop_t *mtop,
             else
             {
                 molb.posres_xB.resize(nat_molb);
-                for (i = 0; i < nat_molb; i++)
+                for (int i = 0; i < nat_molb; i++)
                 {
                     copy_rvec(x[a+i], molb.posres_xB[i]);
                 }
@@ -939,7 +1056,7 @@ static void read_posres(gmx_mtop_t *mtop,
         {
             gmx_fatal(FARGS, "The total mass of the position restraint atoms is 0");
         }
-        for (j = 0; j < npbcdim; j++)
+        for (int j = 0; j < npbcdim; j++)
         {
             com[j] = sum[j]/totmass;
         }
@@ -956,15 +1073,15 @@ static void read_posres(gmx_mtop_t *mtop,
             if (!molb.posres_xA.empty() || !molb.posres_xB.empty())
             {
                 std::vector<gmx::RVec> &xp = (!bTopB ? molb.posres_xA : molb.posres_xB);
-                for (i = 0; i < nat_molb; i++)
+                for (int i = 0; i < nat_molb; i++)
                 {
-                    for (j = 0; j < npbcdim; j++)
+                    for (int j = 0; j < npbcdim; j++)
                     {
                         if (rc_scaling == erscALL)
                         {
                             /* Convert from Cartesian to crystal coordinates */
                             xp[i][j] *= invbox[j][j];
-                            for (k = j+1; k < npbcdim; k++)
+                            for (int k = j+1; k < npbcdim; k++)
                             {
                                 xp[i][j] += invbox[k][j]*xp[i][k];
                             }
@@ -982,10 +1099,10 @@ static void read_posres(gmx_mtop_t *mtop,
         if (rc_scaling == erscCOM)
         {
             /* Convert the COM from Cartesian to crystal coordinates */
-            for (j = 0; j < npbcdim; j++)
+            for (int j = 0; j < npbcdim; j++)
             {
                 com[j] *= invbox[j][j];
-                for (k = j+1; k < npbcdim; k++)
+                for (int k = j+1; k < npbcdim; k++)
                 {
                     com[j] += invbox[k][j]*com[k];
                 }
@@ -1207,24 +1324,24 @@ static int count_constraints(const gmx_mtop_t                        *mtop,
                              gmx::ArrayRef<const MoleculeInformation> mi,
                              warninp                                 *wi)
 {
-    int             count, count_mol, i;
+    int             count, count_mol;
     char            buf[STRLEN];
 
     count = 0;
     for (const gmx_molblock_t &molb : mtop->molblock)
     {
         count_mol = 0;
-        gmx::ArrayRef<const InteractionTypeParameters> plist = mi[molb.type].plist;
+        gmx::ArrayRef<const InteractionsOfType> interactions = mi[molb.type].interactions;
 
-        for (i = 0; i < F_NRE; i++)
+        for (int i = 0; i < F_NRE; i++)
         {
             if (i == F_SETTLE)
             {
-                count_mol += 3*plist[i].nr;
+                count_mol += 3*interactions[i].size();
             }
             else if (interaction_function[i].flags & IF_CONSTRAINT)
             {
-                count_mol += plist[i].nr;
+                count_mol += interactions[i].size();
             }
         }
 
@@ -1796,10 +1913,9 @@ int gmx_grompp(int argc, char *argv[])
         warning_error(wi, warn_buf);
     }
 
-    std::array<InteractionTypeParameters, F_NRE> plist;
-    init_plist(plist);
-    gmx_mtop_t             sys;
-    PreprocessingAtomTypes atypes;
+    std::array<InteractionsOfType, F_NRE> interactions;
+    gmx_mtop_t                            sys;
+    PreprocessingAtomTypes                atypes;
     if (debug)
     {
         pr_symtab(debug, 0, "Just opened", &sys.symtab);
@@ -1815,7 +1931,7 @@ int gmx_grompp(int argc, char *argv[])
     new_status(fn, opt2fn_null("-pp", NFILE, fnm), opt2fn("-c", NFILE, fnm),
                opts, ir, bZero, bGenVel, bVerbose, &state,
                &atypes, &sys, &mi, &intermolecular_interactions,
-               plist, &comb, &reppow, &fudgeQQ,
+               interactions, &comb, &reppow, &fudgeQQ,
                opts->bMorse,
                wi);
 
@@ -1829,7 +1945,7 @@ int gmx_grompp(int argc, char *argv[])
     for (size_t mt = 0; mt < sys.moltype.size(); mt++)
     {
         nvsite +=
-            set_vsites(bVerbose, &sys.moltype[mt].atoms, &atypes, mi[mt].plist);
+            set_vsites(bVerbose, &sys.moltype[mt].atoms, &atypes, mi[mt].interactions);
     }
     /* now throw away all obsolete bonds, angles and dihedrals: */
     /* note: constraints are ALWAYS removed */
@@ -1837,7 +1953,7 @@ int gmx_grompp(int argc, char *argv[])
     {
         for (size_t mt = 0; mt < sys.moltype.size(); mt++)
         {
-            clean_vsite_bondeds(mi[mt].plist, sys.moltype[mt].atoms.nr, bRmVSBds);
+            clean_vsite_bondeds(mi[mt].interactions, sys.moltype[mt].atoms.nr, bRmVSBds);
         }
     }
 
@@ -1952,16 +2068,16 @@ int gmx_grompp(int argc, char *argv[])
     }
 
     /* If we are using CMAP, setup the pre-interpolation grid */
-    if (plist[F_CMAP].ncmap() > 0)
+    if (interactions[F_CMAP].ncmap() > 0)
     {
-        init_cmap_grid(&sys.ffparams.cmap_grid, plist[F_CMAP].cmapAngles, plist[F_CMAP].cmakeGridSpacing);
-        setup_cmap(plist[F_CMAP].cmakeGridSpacing, plist[F_CMAP].cmapAngles, plist[F_CMAP].cmap, &sys.ffparams.cmap_grid);
+        init_cmap_grid(&sys.ffparams.cmap_grid, interactions[F_CMAP].cmapAngles, interactions[F_CMAP].cmakeGridSpacing);
+        setup_cmap(interactions[F_CMAP].cmakeGridSpacing, interactions[F_CMAP].cmapAngles, interactions[F_CMAP].cmap, &sys.ffparams.cmap_grid);
     }
 
     set_wall_atomtype(&atypes, opts, ir, wi);
     if (bRenum)
     {
-        atypes.renumberTypes(plist, &sys, ir->wall_atomtype, bVerbose);
+        atypes.renumberTypes(interactions, &sys, ir->wall_atomtype, bVerbose);
     }
 
     if (ir->implicit_solvent)
@@ -1983,12 +2099,12 @@ int gmx_grompp(int argc, char *argv[])
     }
 
     const int ntype = atypes.size();
-    convertInteractionTypeParameters(ntype, plist, mi, intermolecular_interactions.get(),
-                                     comb, reppow, fudgeQQ, &sys);
+    convertInteractionsOfType(ntype, interactions, mi, intermolecular_interactions.get(),
+                              comb, reppow, fudgeQQ, &sys);
 
     if (debug)
     {
-        pr_symtab(debug, 0, "After converInteractionTypeParameters", &sys.symtab);
+        pr_symtab(debug, 0, "After converInteractionsOfType", &sys.symtab);
     }
 
     /* set ptype to VSite for virtual sites */
@@ -2292,7 +2408,7 @@ int gmx_grompp(int argc, char *argv[])
 
     {
         char   warn_buf[STRLEN];
-        double cio = compute_io(ir, sys.natoms, &sys.groups, F_NRE, 1);
+        double cio = compute_io(ir, sys.natoms, sys.groups, F_NRE, 1);
         sprintf(warn_buf, "This run will generate roughly %.0f Mb of data", cio);
         if (cio > 2000)
         {
@@ -2314,12 +2430,11 @@ int gmx_grompp(int argc, char *argv[])
     write_tpx_state(ftp2fn(efTPR, NFILE, fnm), ir, &state, &sys);
 
     /* Output IMD group, if bIMD is TRUE */
-    write_IMDgroup_to_file(ir->bIMD, ir, &state, &sys, NFILE, fnm);
+    gmx::write_IMDgroup_to_file(ir->bIMD, ir, &state, &sys, NFILE, fnm);
 
     sfree(opts->define);
     sfree(opts->include);
     sfree(opts);
-    done_plist(plist);
     for (auto &mol : mi)
     {
         // Some of the contents of molinfo have been stolen, so

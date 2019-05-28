@@ -59,8 +59,10 @@
 #include "gromacs/nbnxm/gpu_common.h"
 #include "gromacs/nbnxm/gpu_common_utils.h"
 #include "gromacs/nbnxm/gpu_data_mgmt.h"
+#include "gromacs/nbnxm/gridset.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/nbnxm/pairlist.h"
+#include "gromacs/nbnxm/cuda/nbnxm_buffer_ops_kernels.cuh"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/gmxassert.h"
@@ -271,6 +273,39 @@ static inline int calc_shmem_required_nonbonded(const int num_threads_z, const g
     return shmem;
 }
 
+/*! \brief Sync the nonlocal stream with dependent tasks in the local queue.
+ *
+ *  As the point where the local stream tasks can be considered complete happens
+ *  at the same call point where the nonlocal stream should be synced with the
+ *  the local, this function recrds the event if called with the local stream as
+ *  argument and inserts in the GPU stream a wait on the event on the nonlocal.
+ */
+static void insertNonlocalGpuDependency(const gmx_nbnxn_cuda_t   *nb,
+                                        const InteractionLocality interactionLocality)
+{
+    cudaStream_t stream  = nb->stream[interactionLocality];
+
+    /* When we get here all misc operations issued in the local stream as well as
+       the local xq H2D are done,
+       so we record that in the local stream and wait for it in the nonlocal one.
+       This wait needs to precede any PP tasks, bonded or nonbonded, that may
+       compute on interactions between local and nonlocal atoms.
+     */
+    if (nb->bUseTwoStreams)
+    {
+        if (interactionLocality == InteractionLocality::Local)
+        {
+            cudaError_t stat = cudaEventRecord(nb->misc_ops_and_local_H2D_done, stream);
+            CU_RET_ERR(stat, "cudaEventRecord on misc_ops_and_local_H2D_done failed");
+        }
+        else
+        {
+            cudaError_t stat = cudaStreamWaitEvent(stream, nb->misc_ops_and_local_H2D_done, 0);
+            CU_RET_ERR(stat, "cudaStreamWaitEvent on misc_ops_and_local_H2D_done failed");
+        }
+    }
+}
+
 /*! \brief Launch asynchronously the xq buffer host to device copy. */
 void gpu_copy_xq_to_gpu(gmx_nbnxn_cuda_t       *nb,
                         const nbnxn_atomdata_t *nbatom,
@@ -319,15 +354,14 @@ void gpu_copy_xq_to_gpu(gmx_nbnxn_cuda_t       *nb,
         adat_len    = adat->natoms - adat->natoms_local;
     }
 
+    /* HtoD x, q */
     /* beginning of timed HtoD section */
     if (bDoTime)
     {
         t->xf[atomLocality].nb_h2d.openTimingRegion(stream);
     }
 
-    /* HtoD x, q */
-    cu_copy_H2D_async(adat->xq + adat_begin,
-                      static_cast<const void *>(nbatom->x().data() + adat_begin * 4),
+    cu_copy_H2D_async(adat->xq + adat_begin, static_cast<const void *>(nbatom->x().data() + adat_begin * 4),
                       adat_len * sizeof(*adat->xq), stream);
 
     if (bDoTime)
@@ -341,19 +375,7 @@ void gpu_copy_xq_to_gpu(gmx_nbnxn_cuda_t       *nb,
        This wait needs to precede any PP tasks, bonded or nonbonded, that may
        compute on interactions between local and nonlocal atoms.
      */
-    if (nb->bUseTwoStreams)
-    {
-        if (iloc == InteractionLocality::Local)
-        {
-            cudaError_t stat = cudaEventRecord(nb->misc_ops_and_local_H2D_done, stream);
-            CU_RET_ERR(stat, "cudaEventRecord on misc_ops_and_local_H2D_done failed");
-        }
-        else
-        {
-            cudaError_t stat = cudaStreamWaitEvent(stream, nb->misc_ops_and_local_H2D_done, 0);
-            CU_RET_ERR(stat, "cudaStreamWaitEvent on misc_ops_and_local_H2D_done failed");
-        }
-    }
+    insertNonlocalGpuDependency(nb, iloc);
 }
 
 /*! As we execute nonbonded workload in separate streams, before launching
@@ -377,11 +399,6 @@ void gpu_launch_kernel(gmx_nbnxn_cuda_t          *nb,
                        const int                  flags,
                        const InteractionLocality  iloc)
 {
-    /* CUDA kernel launch-related stuff */
-    int                  nblock;
-    dim3                 dim_block, dim_grid;
-    nbnxn_cu_kfunc_ptr_t nb_kernel = nullptr; /* fn pointer to the nonbonded kernel */
-
     cu_atomdata_t       *adat    = nb->atdat;
     cu_nbparam_t        *nbp     = nb->nbparam;
     cu_plist_t          *plist   = nb->plist[iloc];
@@ -429,13 +446,6 @@ void gpu_launch_kernel(gmx_nbnxn_cuda_t          *nb,
         t->interaction[iloc].nb_k.openTimingRegion(stream);
     }
 
-    /* get the pointer to the kernel flavor we need to use */
-    nb_kernel = select_nbnxn_kernel(nbp->eeltype,
-                                    nbp->vdwtype,
-                                    bCalcEner,
-                                    (plist->haveFreshList && !nb->timers->interaction[iloc].didPrune),
-                                    nb->dev_info);
-
     /* Kernel launch config:
      * - The thread block dimensions match the size of i-clusters, j-clusters,
      *   and j-cluster concurrency, in x, y, and z, respectively.
@@ -446,7 +456,8 @@ void gpu_launch_kernel(gmx_nbnxn_cuda_t          *nb,
     {
         num_threads_z = 2;
     }
-    nblock    = calc_nb_kernel_nblock(plist->nsci, nb->dev_info);
+    int nblock    = calc_nb_kernel_nblock(plist->nsci, nb->dev_info);
+
 
     KernelLaunchConfig config;
     config.blockSize[0]     = c_clSize;
@@ -467,9 +478,14 @@ void gpu_launch_kernel(gmx_nbnxn_cuda_t          *nb,
                 config.sharedMemorySize);
     }
 
-    auto      *timingEvent = bDoTime ? t->interaction[iloc].nb_k.fetchNextEvent() : nullptr;
-    const auto kernelArgs  = prepareGpuKernelArguments(nb_kernel, config, adat, nbp, plist, &bCalcFshift);
-    launchGpuKernel(nb_kernel, config, timingEvent, "k_calc_nb", kernelArgs);
+    auto       *timingEvent = bDoTime ? t->interaction[iloc].nb_k.fetchNextEvent() : nullptr;
+    const auto  kernel      = select_nbnxn_kernel(nbp->eeltype,
+                                                  nbp->vdwtype,
+                                                  bCalcEner,
+                                                  (plist->haveFreshList && !nb->timers->interaction[iloc].didPrune),
+                                                  nb->dev_info);
+    const auto kernelArgs  = prepareGpuKernelArguments(kernel, config, adat, nbp, plist, &bCalcFshift);
+    launchGpuKernel(kernel, config, timingEvent, "k_calc_nb", kernelArgs);
 
     if (bDoTime)
     {
@@ -590,7 +606,7 @@ void gpu_launch_kernel_pruneonly(gmx_nbnxn_cuda_t          *nb,
 
     auto          *timingEvent  = bDoTime ? timer->fetchNextEvent() : nullptr;
     constexpr char kernelName[] = "k_pruneonly";
-    const auto    &kernel       = plist->haveFreshList ? nbnxn_kernel_prune_cuda<true> : nbnxn_kernel_prune_cuda<false>;
+    const auto     kernel       = plist->haveFreshList ? nbnxn_kernel_prune_cuda<true> : nbnxn_kernel_prune_cuda<false>;
     const auto     kernelArgs   = prepareGpuKernelArguments(kernel, config, adat, nbp, plist, &numParts, &part);
     launchGpuKernel(kernel, config, timingEvent, kernelName, kernelArgs);
 
@@ -719,6 +735,114 @@ void cuda_set_cacheconfig()
             CU_RET_ERR(stat, "cudaFuncSetCacheConfig failed");
         }
     }
+}
+
+/* X buffer operations on GPU: performs conversion from rvec to nb format. */
+void nbnxn_gpu_x_to_nbat_x(const Nbnxm::GridSet            &gridSet,
+                           int                              gridIndex,
+                           bool                             FillLocal,
+                           gmx_nbnxn_gpu_t                 *nb,
+                           void                            *xPmeDevicePtr,
+                           int                              maxAtomsInColumn,
+                           const Nbnxm::AtomLocality        locality,
+                           const rvec                      *x)
+{
+    cu_atomdata_t             *adat    = nb->atdat;
+    bool                       bDoTime = nb->bDoTime;
+
+    const Nbnxm::Grid         &grid       = gridSet.grids()[gridIndex];
+
+    const int                  numColumns                = grid.numColumns();
+    const int                  cellOffset                = grid.cellOffset();
+    const int                  numAtomsPerCell           = grid.numAtomsPerCell();
+    Nbnxm::InteractionLocality interactionLoc            = Nbnxm::InteractionLocality::Local;
+    int nCopyAtoms                                       = gridSet.numRealAtomsLocal();
+    int copyAtomStart                                    = 0;
+
+    if (locality == Nbnxm::AtomLocality::NonLocal)
+    {
+        interactionLoc          = Nbnxm::InteractionLocality::NonLocal;
+        nCopyAtoms              = gridSet.numRealAtomsTotal()-gridSet.numRealAtomsLocal();
+        copyAtomStart           = gridSet.numRealAtomsLocal();
+    }
+
+    cudaStream_t   stream  = nb->stream[interactionLoc];
+
+    // FIXME: need to either let the local stream get to the
+    // insertNonlocalGpuDependency call or call it separately here
+    if (nCopyAtoms == 0) // empty domain
+    {
+        if (interactionLoc == Nbnxm::InteractionLocality::Local)
+        {
+            insertNonlocalGpuDependency(nb, interactionLoc);
+        }
+        return;
+    }
+
+    const rvec *d_x;
+
+    // copy of coordinates will be required if null pointer has been
+    // passed to function
+    // TODO improve this mechanism
+    bool        copyCoord = (xPmeDevicePtr == nullptr);
+
+    // copy X-coordinate data to device
+    if (copyCoord)
+    {
+        if (bDoTime)
+        {
+            nb->timers->xf[locality].nb_h2d.openTimingRegion(stream);
+        }
+
+        rvec       *devicePtrDest = reinterpret_cast<rvec *> (nb->xrvec[copyAtomStart]);
+        const rvec *devicePtrSrc  = reinterpret_cast<const rvec *> (x[copyAtomStart]);
+        copyToDeviceBuffer(&devicePtrDest, devicePtrSrc, 0, nCopyAtoms,
+                           stream, GpuApiCallBehavior::Async, nullptr);
+
+        if (bDoTime)
+        {
+            nb->timers->xf[locality].nb_h2d.closeTimingRegion(stream);
+        }
+
+        d_x = nb->xrvec;
+    }
+    else //coordinates have already been copied by PME stream
+    {
+        d_x = (rvec*) xPmeDevicePtr;
+    }
+
+    /* launch kernel on GPU */
+    const int          threadsPerBlock = 128;
+
+    KernelLaunchConfig config;
+    config.blockSize[0]     = threadsPerBlock;
+    config.blockSize[1]     = 1;
+    config.blockSize[2]     = 1;
+    config.gridSize[0]      = ((maxAtomsInColumn+1)+threadsPerBlock-1)/threadsPerBlock;
+    config.gridSize[1]      = numColumns;
+    config.gridSize[2]      = 1;
+    config.sharedMemorySize = 0;
+    config.stream           = stream;
+
+    auto       kernelFn           = nbnxn_gpu_x_to_nbat_x_kernel;
+    float     *xqPtr              = &(adat->xq->x);
+    const int *d_atomIndices      = nb->atomIndices;
+    const int *d_cxy_na           = nb->cxy_na[locality];
+    const int *d_cxy_ind          = nb->cxy_ind[locality];
+    const auto kernelArgs         = prepareGpuKernelArguments(kernelFn, config,
+                                                              &numColumns,
+                                                              &xqPtr,
+                                                              &gridIndex,
+                                                              &FillLocal,
+                                                              &d_x,
+                                                              &d_atomIndices,
+                                                              &d_cxy_na,
+                                                              &d_cxy_ind,
+                                                              &cellOffset,
+                                                              &numAtomsPerCell);
+    launchGpuKernel(kernelFn, config, nullptr, "XbufferOps", kernelArgs);
+
+    insertNonlocalGpuDependency(nb, interactionLoc);
 }
 
 } // namespace Nbnxm
