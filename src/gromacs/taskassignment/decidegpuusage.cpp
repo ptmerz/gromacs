@@ -616,7 +616,7 @@ bool decideWhetherToUseGpuForUpdate(const bool                     isDomainDecom
     {
         errorMessage += "Nose-Hoover temperature coupling is not supported.\n";
     }
-    if (!(inputrec.epc == epcNO || inputrec.epc == epcPARRINELLORAHMAN || inputrec.epc == epcBERENDSEN))
+    if (!(inputrec.epc == epcNO || inputrec.epc == epcPARRINELLORAHMAN || inputrec.epc == epcBERENDSEN || inputrec.epc == epcCRESCALE))
     {
         errorMessage += "Only Parrinello-Rahman and Berendsen pressure coupling are supported.\n";
     }

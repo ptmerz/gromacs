@@ -372,7 +372,7 @@ void gmx::LegacySimulator::do_md()
         GMX_RELEASE_ASSERT(
                 ir->etc != etcNOSEHOOVER,
                 "Nose-Hoover temperature coupling is not supported with the GPU update.\n");
-        GMX_RELEASE_ASSERT(ir->epc == epcNO || ir->epc == epcPARRINELLORAHMAN || ir->epc == epcBERENDSEN,
+        GMX_RELEASE_ASSERT(ir->epc == epcNO || ir->epc == epcPARRINELLORAHMAN || ir->epc == epcBERENDSEN || ir->epc == epcCRESCALE,
                            "Only Parrinello-Rahman and Berendsen pressure coupling are supported "
                            "with the GPU update.\n");
         GMX_RELEASE_ASSERT(!mdatoms->haveVsites,
