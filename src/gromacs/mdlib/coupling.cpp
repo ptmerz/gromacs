@@ -1979,6 +1979,10 @@ void pleaseCiteCouplingAlgorithms(FILE* fplog, const t_inputrec& ir)
         {
             please_cite(fplog, "Bussi2007a");
         }
+        if (ir.epc == epcCRESCALE)
+        {
+            please_cite(fplog, "Bernetti2020");
+        }
         // TODO this is actually an integrator, not a coupling algorithm
         if (ir.eI == eiSD1)
         {

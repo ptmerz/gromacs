@@ -292,6 +292,9 @@ void please_cite(FILE* fp, const char* key)
         { "Lindahl2014", "V. Lindahl, J. Lidmar, B. Hess",
           "Accelerated weight histogram method for exploring free energy landscapes",
           "J. Chem. Phys.", 141, 2014, "044110" },
+        { "Bernetti2020", "M. Bernetti, G. Bussi",
+          "Pressure control using stochastic cell rescaling",
+          "arXiv", 1, 2020, "xxxx" },
     };
 #define NSTR static_cast<int>(asize(citedb))
 
