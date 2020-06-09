@@ -88,6 +88,12 @@ void UpdateConstrainCuda::scaleCoordinates(const matrix /* scalingMatrix */)
                "A CPU stub for UpdateConstrain was called instead of the correct implementation.");
 }
 
+void UpdateConstrainCuda::scaleVelocities(const matrix /* scalingMatrix */)
+{
+    GMX_ASSERT(false,
+               "A CPU stub for UpdateConstrain was called instead of the correct implementation.");
+}
+
 void UpdateConstrainCuda::set(DeviceBuffer<float> /* d_x */,
                               DeviceBuffer<float> /* d_v */,
                               const DeviceBuffer<float> /* d_f */,
