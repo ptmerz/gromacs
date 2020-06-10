@@ -1697,7 +1697,6 @@ void update_pcouple_after_coordinates(FILE*             fplog,
                 real dtpc = inputrec->nstpcouple * dt;
                 crescale_pcoupl(fplog, step, inputrec, dtpc, pressure, state->box, forceVirial,
                                 constraintVirial, pressureCouplingMu, &state->baros_integral);
-                /* We consider here coordinate scaling as compulsory so it is hard coded true */
                 crescale_pscale(inputrec, pressureCouplingMu, state->box, state->box_rel, start,
                                 homenr, state->x.rvec_array(), state->v.rvec_array(),
                                 md->cFREEZE, nrnb, scaleCoordinates);
