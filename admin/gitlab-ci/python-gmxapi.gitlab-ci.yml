@@ -21,6 +21,10 @@
   script:
     - source $INSTALL_DIR/bin/GMXRC
     - source $VENVPATH/bin/activate && INSTALL_DIR=$PWD/$INSTALL_DIR bash admin/ci-scripts/build-and-test-py-gmxapi-0.1.sh
+  # Note that the XML output is concatenated when multiple reports are produced
+  # by a single job. If this presents problems, we may have to split the tests
+  # into multiple jobs. In particular, test names will appear once for MPI and
+  # once for non-MPI runs, which may confuse the test result parser.
   artifacts:
     reports:
       junit:
@@ -31,7 +35,6 @@
     when: always
     expire_in: 1 week
   tags:
-    - k8s-scilifelab
   # The dependency means we need to use the same tag restriction as upstream.
   needs:
     - job: gromacs:clang-8:build
@@ -94,7 +97,6 @@ gmxapi-0.1:clang-8:py-3.8.2:
     when: always
     expire_in: 1 week
   tags:
-    - k8s-scilifelab
   # The dependency means we need to use the same tag restriction as upstream.
   needs:
     - job: gromacs:clang-8:build
