@@ -50,7 +50,7 @@
 #include <algorithm>
 #include <memory>
 
-#include "gromacs/awh/awh.h"
+#include "gromacs/applied_forces/awh/awh.h"
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/domdec/collect.h"
 #include "gromacs/domdec/dlbtiming.h"
@@ -81,6 +81,7 @@
 #include "gromacs/mdlib/force.h"
 #include "gromacs/mdlib/force_flags.h"
 #include "gromacs/mdlib/forcerec.h"
+#include "gromacs/mdlib/freeenergyparameters.h"
 #include "gromacs/mdlib/md_support.h"
 #include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/mdoutf.h"
@@ -104,6 +105,7 @@
 #include "gromacs/mdtypes/df_history.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/energyhistory.h"
+#include "gromacs/mdtypes/forcebuffers.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -139,17 +141,17 @@ using gmx::SimulationSignaller;
 
 void gmx::LegacySimulator::do_mimic()
 {
-    t_inputrec*                 ir = inputrec;
-    int64_t                     step, step_rel;
-    double                      t, lam0[efptNR];
-    bool                        isLastStep               = false;
-    bool                        doFreeEnergyPerturbation = false;
-    unsigned int                force_flags;
-    tensor                      force_vir, shake_vir, total_vir, pres;
-    rvec                        mu_tot;
-    PaddedHostVector<gmx::RVec> f{};
-    gmx_global_stat_t           gstat;
-    gmx_shellfc_t*              shellfc;
+    t_inputrec*       ir = inputrec;
+    int64_t           step, step_rel;
+    double            t;
+    bool              isLastStep               = false;
+    bool              doFreeEnergyPerturbation = false;
+    unsigned int      force_flags;
+    tensor            force_vir, shake_vir, total_vir, pres;
+    rvec              mu_tot;
+    ForceBuffers      f;
+    gmx_global_stat_t gstat;
+    gmx_shellfc_t*    shellfc;
 
     double cycles;
 
@@ -222,7 +224,7 @@ void gmx::LegacySimulator::do_mimic()
         nonConstGlobalTopology->intermolecularExclusionGroup = genQmmmIndices(*top_global);
     }
 
-    initialize_lambdas(fplog, *ir, MASTER(cr), &state_global->fep_state, state_global->lambda, lam0);
+    initialize_lambdas(fplog, *ir, MASTER(cr), &state_global->fep_state, state_global->lambda);
 
     const bool        simulationsShareState = false;
     gmx_mdoutf*       outf = init_mdoutf(fplog, nfile, fnm, mdrunOptions, cr, outputProvider,
@@ -341,6 +343,9 @@ void gmx::LegacySimulator::do_mimic()
                     "MiMiC does not report kinetic energy, total energy, temperature, virial and "
                     "pressure.");
 
+    step     = ir->init_step;
+    step_rel = 0;
+
     auto stopHandler = stopHandlerBuilder->getStopHandlerMD(
             compat::not_null<SimulationSignal*>(&signals[eglsSTOPCOND]), false, MASTER(cr),
             ir->nstlist, mdrunOptions.reproducible, nstglobalcomm, mdrunOptions.maximumHoursToRun,
@@ -350,9 +355,6 @@ void gmx::LegacySimulator::do_mimic()
     walltime_accounting_set_valid_finish(walltime_accounting);
 
     const DDBalanceRegionHandler ddBalanceRegionHandler(cr);
-
-    step     = ir->init_step;
-    step_rel = 0;
 
     /* and stop now if we should */
     isLastStep = (isLastStep || (ir->nsteps >= 0 && step_rel > ir->nsteps));
@@ -370,7 +372,7 @@ void gmx::LegacySimulator::do_mimic()
 
         if (ir->efep != efepNO)
         {
-            setCurrentLambdasLocal(step, ir->fepvals, lam0, state->lambda, state->fep_state);
+            state->lambda = currentLambdas(step, *(ir->fepvals), state_global->fep_state);
         }
 
         if (MASTER(cr))
@@ -415,8 +417,8 @@ void gmx::LegacySimulator::do_mimic()
             relax_shell_flexcon(fplog, cr, ms, mdrunOptions.verbose, enforcedRotation, step, ir,
                                 imdSession, pull_work, bNS, force_flags, &top, constr, enerd,
                                 state->natoms, state->x.arrayRefWithPadding(),
-                                state->v.arrayRefWithPadding(), state->box, state->lambda, &state->hist,
-                                f.arrayRefWithPadding(), force_vir, mdatoms, nrnb, wcycle, shellfc,
+                                state->v.arrayRefWithPadding(), state->box, state->lambda,
+                                &state->hist, &f.view(), force_vir, mdatoms, nrnb, wcycle, shellfc,
                                 fr, runScheduleWork, t, mu_tot, vsite, ddBalanceRegionHandler);
         }
         else
@@ -430,7 +432,7 @@ void gmx::LegacySimulator::do_mimic()
             gmx_edsam* ed  = nullptr;
             do_force(fplog, cr, ms, ir, awh, enforcedRotation, imdSession, pull_work, step, nrnb,
                      wcycle, &top, state->box, state->x.arrayRefWithPadding(), &state->hist,
-                     f.arrayRefWithPadding(), force_vir, mdatoms, enerd, state->lambda, fr, runScheduleWork,
+                     &f.view(), force_vir, mdatoms, enerd, state->lambda, fr, runScheduleWork,
                      vsite, mu_tot, t, ed, GMX_FORCE_NS | force_flags, ddBalanceRegionHandler);
         }
 
@@ -443,8 +445,8 @@ void gmx::LegacySimulator::do_mimic()
             const bool bSumEkinhOld        = false;
             do_md_trajectory_writing(fplog, cr, nfile, fnm, step, step_rel, t, ir, state,
                                      state_global, observablesHistory, top_global, fr, outf,
-                                     energyOutput, ekind, f, isCheckpointingStep, doRerun,
-                                     isLastStep, mdrunOptions.writeConfout, bSumEkinhOld);
+                                     energyOutput, ekind, f.view().force(), isCheckpointingStep,
+                                     doRerun, isLastStep, mdrunOptions.writeConfout, bSumEkinhOld);
         }
 
         stopHandler->setSignal();
@@ -478,15 +480,16 @@ void gmx::LegacySimulator::do_mimic()
         {
             gmx::HostVector<gmx::RVec>     fglobal(top_global->natoms);
             gmx::ArrayRef<gmx::RVec>       ftemp;
-            gmx::ArrayRef<const gmx::RVec> flocal = gmx::makeArrayRef(f);
+            gmx::ArrayRef<const gmx::RVec> flocal = f.view().force();
             if (DOMAINDECOMP(cr))
             {
                 ftemp = gmx::makeArrayRef(fglobal);
-                dd_collect_vec(cr->dd, state, flocal, ftemp);
+                dd_collect_vec(cr->dd, state->ddp_count, state->ddp_count_cg_gl, state->cg_gl,
+                               flocal, ftemp);
             }
             else
             {
-                ftemp = gmx::makeArrayRef(f);
+                ftemp = f.view().force();
             }
 
             if (MASTER(cr))
@@ -506,17 +509,19 @@ void gmx::LegacySimulator::do_mimic()
         {
             /* Sum up the foreign energy and dhdl terms for md and sd.
                Currently done every step so that dhdl is correct in the .edr */
-            sum_dhdl(enerd, state->lambda, *ir->fepvals);
+            accumulateKineticLambdaComponents(enerd, state->lambda, *ir->fepvals);
         }
 
         /* Output stuff */
         if (MASTER(cr))
         {
             const bool bCalcEnerStep = true;
-            energyOutput.addDataAtEnergyStep(doFreeEnergyPerturbation, bCalcEnerStep, t,
-                                             mdatoms->tmass, enerd, state, ir->fepvals,
-                                             ir->expandedvals, state->box, shake_vir, force_vir,
-                                             total_vir, pres, ekind, mu_tot, constr);
+            energyOutput.addDataAtEnergyStep(
+                    doFreeEnergyPerturbation, bCalcEnerStep, t, mdatoms->tmass, enerd, ir->fepvals,
+                    ir->expandedvals, state->box,
+                    PTCouplingArrays({ state->boxv, state->nosehoover_xi, state->nosehoover_vxi,
+                                       state->nhpres_xi, state->nhpres_vxi }),
+                    state->fep_state, shake_vir, force_vir, total_vir, pres, ekind, mu_tot, constr);
 
             const bool do_ene = true;
             const bool do_log = true;
@@ -526,8 +531,7 @@ void gmx::LegacySimulator::do_mimic()
 
             EnergyOutput::printAnnealingTemperatures(do_log ? fplog : nullptr, groups, &(ir->opts));
             energyOutput.printStepToEnergyFile(mdoutf_get_fp_ene(outf), do_ene, do_dr, do_or,
-                                               do_log ? fplog : nullptr, step, t,
-                                               &fr->listedForces->fcdata(), awh);
+                                               do_log ? fplog : nullptr, step, t, fr->fcdata.get(), awh);
 
             if (do_per_step(step, ir->nstlog))
             {

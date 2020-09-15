@@ -65,6 +65,7 @@
 #include "gromacs/mdlib/vsite.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
+#include "gromacs/mdtypes/forcebuffers.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -916,7 +917,7 @@ void relax_shell_flexcon(FILE*                         fplog,
                          const matrix                  box,
                          ArrayRef<real>                lambda,
                          history_t*                    hist,
-                         ArrayRefWithPadding<RVec>     f,
+                         gmx::ForceBuffersView*        f,
                          tensor                        force_vir,
                          const t_mdatoms*              md,
                          t_nrnb*                       nrnb,
@@ -1018,10 +1019,11 @@ void relax_shell_flexcon(FILE*                         fplog,
     {
         pr_rvecs(debug, 0, "x b4 do_force", as_rvec_array(x.data()), homenr);
     }
-    int shellfc_flags = force_flags | (bVerbose ? GMX_FORCE_ENERGY : 0);
+    int                   shellfc_flags = force_flags | (bVerbose ? GMX_FORCE_ENERGY : 0);
+    gmx::ForceBuffersView forceViewInit = gmx::ForceBuffersView(forceWithPadding[Min]);
     do_force(fplog, cr, ms, inputrec, nullptr, enforcedRotation, imdSession, pull_work, mdstep,
-             nrnb, wcycle, top, box, xPadded, hist, forceWithPadding[Min], force_vir, md, enerd,
-             lambda, fr, runScheduleWork, vsite, mu_tot, t, nullptr,
+             nrnb, wcycle, top, box, xPadded, hist, &forceViewInit, force_vir, md, enerd, lambda,
+             fr, runScheduleWork, vsite, mu_tot, t, nullptr,
              (bDoNS ? GMX_FORCE_NS : 0) | shellfc_flags, ddBalanceRegionHandler);
 
     sf_dir = 0;
@@ -1035,7 +1037,7 @@ void relax_shell_flexcon(FILE*                         fplog,
             sf_dir += md->massT[i] * norm2(shfc->acc_dir[i]);
         }
     }
-    sum_epot(&(enerd->grpp), enerd->term);
+    accumulatePotentialEnergies(enerd, lambda, inputrec->fepvals);
     Epot[Min] = enerd->term[F_EPOT];
 
     df[Min] = rms_force(cr, forceWithPadding[Min].paddedArrayRef(), shells, nflexcon, &sf_dir, &Epot[Min]);
@@ -1105,11 +1107,11 @@ void relax_shell_flexcon(FILE*                         fplog,
             pr_rvecs(debug, 0, "RELAX: pos[Try]  ", as_rvec_array(pos[Try].data()), homenr);
         }
         /* Try the new positions */
-        do_force(fplog, cr, ms, inputrec, nullptr, enforcedRotation, imdSession, pull_work, 1, nrnb,
-                 wcycle, top, box, posWithPadding[Try], hist, forceWithPadding[Try], force_vir, md,
-                 enerd, lambda, fr, runScheduleWork, vsite, mu_tot, t, nullptr, shellfc_flags,
-                 ddBalanceRegionHandler);
-        sum_epot(&(enerd->grpp), enerd->term);
+        gmx::ForceBuffersView forceViewTry = gmx::ForceBuffersView(forceWithPadding[Try]);
+        do_force(fplog, cr, ms, inputrec, nullptr, enforcedRotation, imdSession, pull_work, 1, nrnb, wcycle,
+                 top, box, posWithPadding[Try], hist, &forceViewTry, force_vir, md, enerd, lambda, fr,
+                 runScheduleWork, vsite, mu_tot, t, nullptr, shellfc_flags, ddBalanceRegionHandler);
+        accumulatePotentialEnergies(enerd, lambda, inputrec->fepvals);
         if (gmx_debug_at)
         {
             pr_rvecs(debug, 0, "RELAX: force[Min]", as_rvec_array(force[Min].data()), homenr);
@@ -1202,7 +1204,7 @@ void relax_shell_flexcon(FILE*                         fplog,
 
     /* Copy back the coordinates and the forces */
     std::copy(pos[Min].begin(), pos[Min].end(), x.data());
-    std::copy(force[Min].begin(), force[Min].end(), f.unpaddedArrayRef().begin());
+    std::copy(force[Min].begin(), force[Min].end(), f->force().begin());
 }
 
 void done_shellfc(FILE* fplog, gmx_shellfc_t* shfc, int64_t numSteps)

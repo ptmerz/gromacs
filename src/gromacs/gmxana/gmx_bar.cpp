@@ -983,9 +983,8 @@ static void sim_data_histogram(sim_data_t* sd, const char* filename, int nbin_de
     gmx_bool       first_set = FALSE;
     /* histogram data: */
     std::vector<int> hist;
-    double           dx     = 0;
-    double           minval = 0;
-    int              i;
+    double           dx      = 0;
+    double           minval  = 0;
     lambda_data_t*   bl_head = sd->lb;
 
     printf("\nWriting histogram to %s\n", filename);
@@ -1044,7 +1043,7 @@ static void sim_data_histogram(sim_data_t* sd, const char* filename, int nbin_de
 
             sample_coll_make_hist(sc, &hist, &dx, &minval, nbin_default);
 
-            for (i = 0; i < gmx::ssize(hist); i++)
+            for (gmx::index i = 0; i < gmx::ssize(hist); i++)
             {
                 double xmin = i * dx + minval;
                 double xmax = (i + 1) * dx + minval;
@@ -3080,7 +3079,7 @@ static void read_barsim_edr(const char* fn, real* temp, sim_data_t* sd)
                 old_start_lambda = fr->block[i].sub[0].dval[3];
                 delta_lambda     = fr->block[i].sub[0].dval[4];
 
-                if (delta_lambda > 0)
+                if (delta_lambda != 0)
                 {
                     gmx_fatal(FARGS, "Lambda values not constant in %s: can't apply BAR method", fn);
                 }

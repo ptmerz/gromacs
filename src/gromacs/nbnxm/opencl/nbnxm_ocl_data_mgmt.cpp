@@ -53,9 +53,9 @@
 #include <cmath>
 
 #include "gromacs/gpu_utils/device_stream_manager.h"
-#include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/oclutils.h"
-#include "gromacs/hardware/gpu_hw_info.h"
+#include "gromacs/hardware/device_information.h"
+#include "gromacs/hardware/device_management.h"
 #include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/force_flags.h"
 #include "gromacs/mdtypes/interaction_const.h"
@@ -65,6 +65,7 @@
 #include "gromacs/nbnxm/gpu_jit_support.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/nbnxm/nbnxm_gpu.h"
+#include "gromacs/nbnxm/nbnxm_gpu_data_mgmt.h"
 #include "gromacs/nbnxm/pairlistsets.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/timing/gpu_timing.h"
@@ -98,29 +99,6 @@ namespace Nbnxm
  */
 static unsigned int gpu_min_ci_balanced_factor = 50;
 
-/*! \brief Tabulates the Ewald Coulomb force and initializes the size/scale
- * and the table GPU array.
- *
- * If called with an already allocated table, it just re-uploads the
- * table.
- */
-static void init_ewald_coulomb_force_table(const EwaldCorrectionTables& tables,
-                                           NBParamGpu*                  nbp,
-                                           const DeviceContext&         deviceContext)
-{
-    if (nbp->coulomb_tab != nullptr)
-    {
-        freeDeviceBuffer(&(nbp->coulomb_tab));
-    }
-
-    DeviceBuffer<real> coulomb_tab;
-
-    initParamLookupTable(&coulomb_tab, nullptr, tables.tableF.data(), tables.tableF.size(), deviceContext);
-
-    nbp->coulomb_tab       = coulomb_tab;
-    nbp->coulomb_tab_scale = tables.scale;
-}
-
 
 /*! \brief Initializes the atomdata structure first time, it only gets filled at
     pair-search.
@@ -144,30 +122,6 @@ static void init_atomdata_first(cl_atomdata_t* ad, int ntypes, const DeviceConte
     /* size -1 indicates that the respective array hasn't been initialized yet */
     ad->natoms = -1;
     ad->nalloc = -1;
-}
-
-/*! \brief Copies all parameters related to the cut-off from ic to nbp
- */
-static void set_cutoff_parameters(NBParamGpu* nbp, const interaction_const_t* ic, const PairlistParams& listParams)
-{
-    nbp->ewald_beta        = ic->ewaldcoeff_q;
-    nbp->sh_ewald          = ic->sh_ewald;
-    nbp->epsfac            = ic->epsfac;
-    nbp->two_k_rf          = 2.0 * ic->k_rf;
-    nbp->c_rf              = ic->c_rf;
-    nbp->rvdw_sq           = ic->rvdw * ic->rvdw;
-    nbp->rcoulomb_sq       = ic->rcoulomb * ic->rcoulomb;
-    nbp->rlistOuter_sq     = listParams.rlistOuter * listParams.rlistOuter;
-    nbp->rlistInner_sq     = listParams.rlistInner * listParams.rlistInner;
-    nbp->useDynamicPruning = listParams.useDynamicPruning;
-
-    nbp->sh_lj_ewald   = ic->sh_lj_ewald;
-    nbp->ewaldcoeff_lj = ic->ewaldcoeff_lj;
-
-    nbp->rvdw_switch      = ic->rvdw_switch;
-    nbp->dispersion_shift = ic->dispersion_shift;
-    nbp->repulsion_shift  = ic->repulsion_shift;
-    nbp->vdw_switch       = ic->vdw_switch;
 }
 
 /*! \brief Returns the kinds of electrostatics and Vdw OpenCL
@@ -293,74 +247,6 @@ static void init_nbparam(NBParamGpu*                     nbp,
             nbp->nbfp_comb = nbfp_comb;
         }
     }
-}
-
-//! This function is documented in the header file
-void gpu_pme_loadbal_update_param(const nonbonded_verlet_t* nbv, const interaction_const_t* ic)
-{
-    if (!nbv || !nbv->useGpu())
-    {
-        return;
-    }
-    NbnxmGpu*   nb  = nbv->gpu_nbv;
-    NBParamGpu* nbp = nb->nbparam;
-
-    set_cutoff_parameters(nbp, ic, nbv->pairlistSets().params());
-
-    nbp->eeltype = nbnxn_gpu_pick_ewald_kernel_type(*ic);
-
-    GMX_RELEASE_ASSERT(ic->coulombEwaldTables, "Need valid Coulomb Ewald correction tables");
-    init_ewald_coulomb_force_table(*ic->coulombEwaldTables, nbp, *nb->deviceContext_);
-}
-
-/*! \brief Initializes the pair list data structure.
- */
-static void init_plist(cl_plist_t* pl)
-{
-    /* initialize to nullptr pointers to data that is not allocated here and will
-       need reallocation in nbnxn_gpu_init_pairlist */
-    pl->sci   = nullptr;
-    pl->cj4   = nullptr;
-    pl->imask = nullptr;
-    pl->excl  = nullptr;
-
-    /* size -1 indicates that the respective array hasn't been initialized yet */
-    pl->na_c          = -1;
-    pl->nsci          = -1;
-    pl->sci_nalloc    = -1;
-    pl->ncj4          = -1;
-    pl->cj4_nalloc    = -1;
-    pl->nimask        = -1;
-    pl->imask_nalloc  = -1;
-    pl->nexcl         = -1;
-    pl->excl_nalloc   = -1;
-    pl->haveFreshList = false;
-}
-
-/*! \brief Initializes the timings data structure.
- */
-static void init_timings(gmx_wallclock_gpu_nbnxn_t* t)
-{
-    int i, j;
-
-    t->nb_h2d_t = 0.0;
-    t->nb_d2h_t = 0.0;
-    t->nb_c     = 0;
-    t->pl_h2d_t = 0.0;
-    t->pl_h2d_c = 0;
-    for (i = 0; i < 2; i++)
-    {
-        for (j = 0; j < 2; j++)
-        {
-            t->ktime[i][j].t = 0.0;
-            t->ktime[i][j].c = 0;
-        }
-    }
-
-    t->pruneTime.c        = 0;
-    t->pruneTime.t        = 0.0;
-    t->dynamicPruneTime.c = 0;
-    t->dynamicPruneTime.t = 0.0;
 }
 
 /*! \brief Initializes the OpenCL kernel pointers of the nbnxn_ocl_ptr_t input data structure. */
@@ -572,69 +458,6 @@ void gpu_clear_outputs(NbnxmGpu* nb, bool computeVirial)
     cl_int gmx_unused cl_error;
     cl_error = clFlush(nb->deviceStreams[InteractionLocality::Local]->stream());
     GMX_ASSERT(cl_error == CL_SUCCESS, ("clFlush failed: " + ocl_get_error_string(cl_error)).c_str());
-}
-
-//! This function is documented in the header file
-void gpu_init_pairlist(NbnxmGpu* nb, const NbnxnPairlistGpu* h_plist, const InteractionLocality iloc)
-{
-    char sbuf[STRLEN];
-    // Timing accumulation should happen only if there was work to do
-    // because getLastRangeTime() gets skipped with empty lists later
-    // which leads to the counter not being reset.
-    bool                bDoTime      = (nb->bDoTime && !h_plist->sci.empty());
-    const DeviceStream& deviceStream = *nb->deviceStreams[iloc];
-    cl_plist_t*         d_plist      = nb->plist[iloc];
-
-    if (d_plist->na_c < 0)
-    {
-        d_plist->na_c = h_plist->na_ci;
-    }
-    else
-    {
-        if (d_plist->na_c != h_plist->na_ci)
-        {
-            sprintf(sbuf, "In cu_init_plist: the #atoms per cell has changed (from %d to %d)",
-                    d_plist->na_c, h_plist->na_ci);
-            gmx_incons(sbuf);
-        }
-    }
-
-    gpu_timers_t::Interaction& iTimers = nb->timers->interaction[iloc];
-
-    if (bDoTime)
-    {
-        iTimers.pl_h2d.openTimingRegion(deviceStream);
-        iTimers.didPairlistH2D = true;
-    }
-
-    // TODO most of this function is same in CUDA and OpenCL, move into the header
-    const DeviceContext& deviceContext = *nb->deviceContext_;
-
-    reallocateDeviceBuffer(&d_plist->sci, h_plist->sci.size(), &d_plist->nsci, &d_plist->sci_nalloc,
-                           deviceContext);
-    copyToDeviceBuffer(&d_plist->sci, h_plist->sci.data(), 0, h_plist->sci.size(), deviceStream,
-                       GpuApiCallBehavior::Async, bDoTime ? iTimers.pl_h2d.fetchNextEvent() : nullptr);
-
-    reallocateDeviceBuffer(&d_plist->cj4, h_plist->cj4.size(), &d_plist->ncj4, &d_plist->cj4_nalloc,
-                           deviceContext);
-    copyToDeviceBuffer(&d_plist->cj4, h_plist->cj4.data(), 0, h_plist->cj4.size(), deviceStream,
-                       GpuApiCallBehavior::Async, bDoTime ? iTimers.pl_h2d.fetchNextEvent() : nullptr);
-
-    reallocateDeviceBuffer(&d_plist->imask, h_plist->cj4.size() * c_nbnxnGpuClusterpairSplit,
-                           &d_plist->nimask, &d_plist->imask_nalloc, deviceContext);
-
-    reallocateDeviceBuffer(&d_plist->excl, h_plist->excl.size(), &d_plist->nexcl,
-                           &d_plist->excl_nalloc, deviceContext);
-    copyToDeviceBuffer(&d_plist->excl, h_plist->excl.data(), 0, h_plist->excl.size(), deviceStream,
-                       GpuApiCallBehavior::Async, bDoTime ? iTimers.pl_h2d.fetchNextEvent() : nullptr);
-
-    if (bDoTime)
-    {
-        iTimers.pl_h2d.closeTimingRegion(deviceStream);
-    }
-
-    /* need to prune the pair list during the next step */
-    d_plist->haveFreshList = true;
 }
 
 //! This function is documented in the header file
@@ -884,30 +707,9 @@ void gpu_free(NbnxmGpu* nb)
 }
 
 //! This function is documented in the header file
-gmx_wallclock_gpu_nbnxn_t* gpu_get_timings(NbnxmGpu* nb)
-{
-    return (nb != nullptr && nb->bDoTime) ? nb->timings : nullptr;
-}
-
-//! This function is documented in the header file
-void gpu_reset_timings(nonbonded_verlet_t* nbv)
-{
-    if (nbv->gpu_nbv && nbv->gpu_nbv->bDoTime)
-    {
-        init_timings(nbv->gpu_nbv->timings);
-    }
-}
-
-//! This function is documented in the header file
 int gpu_min_ci_balanced(NbnxmGpu* nb)
 {
     return nb != nullptr ? gpu_min_ci_balanced_factor * nb->deviceContext_->deviceInfo().compute_units : 0;
-}
-
-//! This function is documented in the header file
-gmx_bool gpu_is_kernel_ewald_analytical(const NbnxmGpu* nb)
-{
-    return ((nb->nbparam->eeltype == eelTypeEWALD_ANA) || (nb->nbparam->eeltype == eelTypeEWALD_ANA_TWIN));
 }
 
 } // namespace Nbnxm

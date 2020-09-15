@@ -47,7 +47,7 @@
 #include <algorithm>
 #include <string>
 
-#include "gromacs/awh/read_params.h"
+#include "gromacs/applied_forces/awh/read_params.h"
 #include "gromacs/fileio/readinp.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/gmxlib/network.h"
@@ -2116,7 +2116,7 @@ void get_ir(const char*     mdparin,
     }
 
     /* AWH biasing
-       NOTE: needs COM pulling input */
+       NOTE: needs COM pulling or free energy input */
     printStringNewline(&inp, "AWH biasing");
     ir->bDoAwh = (get_eeenum(&inp, "awh", yesno_names, wi) != 0);
     if (ir->bDoAwh)
@@ -2487,7 +2487,7 @@ void get_ir(const char*     mdparin,
     /* FREE ENERGY AND EXPANDED ENSEMBLE OPTIONS */
     if (ir->efep != efepNO)
     {
-        if (fep->delta_lambda > 0)
+        if (fep->delta_lambda != 0)
         {
             ir->efep = efepSLOWGROWTH;
         }

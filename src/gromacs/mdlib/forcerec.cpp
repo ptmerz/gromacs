@@ -732,8 +732,10 @@ static void init_ewald_f_table(const interaction_const_t& ic,
      */
     const real tableScale = ewald_spline3_table_scale(ic, useCoulombTable, useVdwTable);
 
+    const bool havePerturbedNonbondeds = (ic.softCoreParameters != nullptr);
+
     real tableLen = ic.rcoulomb;
-    if (useCoulombTable && tableExtensionLength > 0.0)
+    if (useCoulombTable && havePerturbedNonbondeds && tableExtensionLength > 0.0)
     {
         /* TODO: Ideally this should also check if couple-intramol == no, but that isn't
          * stored in ir. Grompp puts that info into an opts structure that doesn't make it into the tpr.
@@ -1259,18 +1261,16 @@ void init_forcerec(FILE*                            fp,
         make_wall_tables(fp, ir, tabfn, &mtop->groups, fr);
     }
 
-    /* Initialize the thread working data for bonded interactions */
-    fr->listedForces = std::make_unique<ListedForces>(
-            mtop->groups.groups[SimulationAtomGroupType::EnergyOutput].size(),
-            gmx_omp_nthreads_get(emntBonded), fp);
+    fr->fcdata = std::make_unique<t_fcdata>();
 
     if (!tabbfnm.empty())
     {
-        t_fcdata& fcdata = fr->listedForces->fcdata();
+        t_fcdata& fcdata = *fr->fcdata;
         // Need to catch std::bad_alloc
         // TODO Don't need to catch this here, when merging with master branch
         try
         {
+            // TODO move these tables into a separate struct and store reference in ListedForces
             fcdata.bondtab  = make_bonded_tables(fp, F_TABBONDS, F_TABBONDSNC, mtop, tabbfnm, "b");
             fcdata.angletab = make_bonded_tables(fp, F_TABANGLES, -1, mtop, tabbfnm, "a");
             fcdata.dihtab   = make_bonded_tables(fp, F_TABDIHS, -1, mtop, tabbfnm, "d");
@@ -1286,6 +1286,11 @@ void init_forcerec(FILE*                            fp,
                     "interactions\n");
         }
     }
+
+    /* Initialize the thread working data for bonded interactions */
+    fr->listedForces.emplace_back(
+            mtop->ffparams, mtop->groups.groups[SimulationAtomGroupType::EnergyOutput].size(),
+            gmx_omp_nthreads_get(emntBonded), ListedForces::interactionSelectionAll(), fp);
 
     // QM/MM initialization if requested
     if (ir->bQMMM)

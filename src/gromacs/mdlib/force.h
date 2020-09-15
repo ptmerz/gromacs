@@ -38,9 +38,9 @@
 #ifndef GMX_MDLIB_FORCE_H
 #define GMX_MDLIB_FORCE_H
 
-#include "gromacs/math/arrayrefwithpadding.h"
+#include <cstdio>
+
 #include "gromacs/math/vectypes.h"
-#include "gromacs/utility/arrayref.h"
 
 class DDBalanceRegionHandler;
 struct gmx_edsam;
@@ -62,8 +62,12 @@ struct t_nrnb;
 
 namespace gmx
 {
+template<typename>
+class ArrayRef;
+template<typename>
+class ArrayRefWithPadding;
 class Awh;
-class ForceOutputs;
+class ForceBuffersView;
 class ForceWithVirial;
 class ImdSession;
 class MdrunScheduleWorkload;
@@ -87,11 +91,11 @@ void do_force(FILE*                               log,
               const matrix                        box,
               gmx::ArrayRefWithPadding<gmx::RVec> coordinates,
               history_t*                          hist,
-              gmx::ArrayRefWithPadding<gmx::RVec> force,
+              gmx::ForceBuffersView*              force,
               tensor                              vir_force,
               const t_mdatoms*                    mdatoms,
               gmx_enerdata_t*                     enerd,
-              gmx::ArrayRef<real>                 lambda,
+              gmx::ArrayRef<const real>           lambda,
               t_forcerec*                         fr,
               gmx::MdrunScheduleWorkload*         runScheduleWork,
               gmx::VirtualSitesHandler*           vsite,
@@ -111,28 +115,24 @@ void do_force(FILE*                               log,
  */
 
 
-/* Compute listed forces, Ewald, PME corrections add when (when used).
+/* Calculate CPU Ewald or PME-mesh forces when done on this rank and Ewald corrections, when used
  *
- * xWholeMolecules only needs to contain whole molecules when orientation
- * restraints need to be computed and can be empty otherwise.
+ * Note that Ewald dipole and net charge corrections are always computed here, independently
+ * on whether the PME-mesh contribution is computed on a separate PME rank or on a GPU.
  */
-void do_force_lowlevel(t_forcerec*                               fr,
-                       const t_inputrec*                         ir,
-                       const t_commrec*                          cr,
-                       const gmx_multisim_t*                     ms,
-                       t_nrnb*                                   nrnb,
-                       gmx_wallcycle*                            wcycle,
-                       const t_mdatoms*                          md,
-                       gmx::ArrayRefWithPadding<const gmx::RVec> coordinates,
-                       gmx::ArrayRef<const gmx::RVec>            xWholeMolecules,
-                       history_t*                                hist,
-                       gmx::ForceOutputs*                        forceOutputs,
-                       gmx_enerdata_t*                           enerd,
-                       const matrix                              box,
-                       const real*                               lambda,
-                       const rvec*                               mu_tot,
-                       const gmx::StepWorkload&                  stepWork,
-                       const DDBalanceRegionHandler&             ddBalanceRegionHandler);
-/* Call all the force routines */
+void calculateLongRangeNonbondeds(t_forcerec*                    fr,
+                                  const t_inputrec*              ir,
+                                  const t_commrec*               cr,
+                                  t_nrnb*                        nrnb,
+                                  gmx_wallcycle*                 wcycle,
+                                  const t_mdatoms*               md,
+                                  gmx::ArrayRef<const gmx::RVec> coordinates,
+                                  gmx::ForceWithVirial*          forceWithVirial,
+                                  gmx_enerdata_t*                enerd,
+                                  const matrix                   box,
+                                  const real*                    lambda,
+                                  const rvec*                    mu_tot,
+                                  const gmx::StepWorkload&       stepWork,
+                                  const DDBalanceRegionHandler&  ddBalanceRegionHandler);
 
 #endif

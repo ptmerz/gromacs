@@ -45,13 +45,17 @@
 
 #include <memory>
 
+#include "gromacs/mdlib/vsite.h"
+#include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/modularsimulator/modularsimulator.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/mdmodulenotification.h"
 
 #include "legacysimulator.h"
 #include "membedholder.h"
+#include "replicaexchange.h"
 
 
 namespace gmx
@@ -124,19 +128,23 @@ std::unique_ptr<ISimulator> SimulatorBuilder::build(bool useModularSimulator)
     {
         // NOLINTNEXTLINE(modernize-make-unique): make_unique does not work with private constructor
         return std::unique_ptr<ModularSimulator>(new ModularSimulator(
-                simulatorEnv_->fplog_, simulatorEnv_->commRec_, simulatorEnv_->multisimCommRec_,
-                simulatorEnv_->logger_, legacyInput_->numFile, legacyInput_->filenames,
-                simulatorEnv_->outputEnv_, simulatorConfig_->mdrunOptions_,
-                simulatorConfig_->startingBehavior_, constraintsParam_->vsite,
-                constraintsParam_->constr, constraintsParam_->enforcedRotation, boxDeformation_->deform,
-                simulatorModules_->outputProvider, simulatorModules_->mdModulesNotifier,
-                legacyInput_->inputrec, interactiveMD_->imdSession, centerOfMassPulling_->pull_work,
-                ionSwapping_->ionSwap, topologyData_->top_global, simulatorStateData_->globalState_p,
-                simulatorStateData_->observablesHistory_p, topologyData_->mdAtoms, profiling_->nrnb,
-                profiling_->wallCycle, legacyInput_->forceRec, simulatorStateData_->enerdata_p,
-                simulatorStateData_->ekindata_p, simulatorConfig_->runScheduleWork_,
-                *replicaExchangeParameters_, membedHolder_->membed(), profiling_->walltimeAccounting,
-                std::move(stopHandlerBuilder_), simulatorConfig_->mdrunOptions_.rerun));
+                std::make_unique<LegacySimulatorData>(
+                        simulatorEnv_->fplog_, simulatorEnv_->commRec_, simulatorEnv_->multisimCommRec_,
+                        simulatorEnv_->logger_, legacyInput_->numFile, legacyInput_->filenames,
+                        simulatorEnv_->outputEnv_, simulatorConfig_->mdrunOptions_,
+                        simulatorConfig_->startingBehavior_, constraintsParam_->vsite,
+                        constraintsParam_->constr, constraintsParam_->enforcedRotation,
+                        boxDeformation_->deform, simulatorModules_->outputProvider,
+                        simulatorModules_->mdModulesNotifier, legacyInput_->inputrec,
+                        interactiveMD_->imdSession, centerOfMassPulling_->pull_work, ionSwapping_->ionSwap,
+                        topologyData_->top_global, simulatorStateData_->globalState_p,
+                        simulatorStateData_->observablesHistory_p, topologyData_->mdAtoms,
+                        profiling_->nrnb, profiling_->wallCycle, legacyInput_->forceRec,
+                        simulatorStateData_->enerdata_p, simulatorStateData_->ekindata_p,
+                        simulatorConfig_->runScheduleWork_, *replicaExchangeParameters_,
+                        membedHolder_->membed(), profiling_->walltimeAccounting,
+                        std::move(stopHandlerBuilder_), simulatorConfig_->mdrunOptions_.rerun),
+                std::move(modularSimulatorCheckpointData_)));
     }
     // NOLINTNEXTLINE(modernize-make-unique): make_unique does not work with private constructor
     return std::unique_ptr<LegacySimulator>(new LegacySimulator(
@@ -158,6 +166,16 @@ std::unique_ptr<ISimulator> SimulatorBuilder::build(bool useModularSimulator)
 void SimulatorBuilder::add(MembedHolder&& membedHolder)
 {
     membedHolder_ = std::make_unique<MembedHolder>(std::move(membedHolder));
+}
+
+void SimulatorBuilder::add(ReplicaExchangeParameters&& replicaExchangeParameters)
+{
+    replicaExchangeParameters_ = std::make_unique<ReplicaExchangeParameters>(replicaExchangeParameters);
+}
+
+void SimulatorBuilder::add(std::unique_ptr<ReadCheckpointDataHolder> modularSimulatorCheckpointData)
+{
+    modularSimulatorCheckpointData_ = std::move(modularSimulatorCheckpointData);
 }
 
 

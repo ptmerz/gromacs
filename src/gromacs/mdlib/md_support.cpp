@@ -48,6 +48,7 @@
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
+#include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/mdlib/coupling.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
@@ -56,7 +57,6 @@
 #include "gromacs/mdlib/tgroup.h"
 #include "gromacs/mdlib/update.h"
 #include "gromacs/mdlib/vcm.h"
-#include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/df_history.h"
 #include "gromacs/mdtypes/enerdata.h"
@@ -79,79 +79,6 @@
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
-
-// TODO move this to multi-sim module
-bool multisim_int_all_are_equal(const gmx_multisim_t* ms, int64_t value)
-{
-    bool     allValuesAreEqual = true;
-    int64_t* buf;
-
-    GMX_RELEASE_ASSERT(ms, "Invalid use of multi-simulation pointer");
-
-    snew(buf, ms->nsim);
-    /* send our value to all other master ranks, receive all of theirs */
-    buf[ms->sim] = value;
-    gmx_sumli_sim(ms->nsim, buf, ms);
-
-    for (int s = 0; s < ms->nsim; s++)
-    {
-        if (buf[s] != value)
-        {
-            allValuesAreEqual = false;
-            break;
-        }
-    }
-
-    sfree(buf);
-
-    return allValuesAreEqual;
-}
-
-int multisim_min(const gmx_multisim_t* ms, int nmin, int n)
-{
-    int*     buf;
-    gmx_bool bPos, bEqual;
-    int      s, d;
-
-    snew(buf, ms->nsim);
-    buf[ms->sim] = n;
-    gmx_sumi_sim(ms->nsim, buf, ms);
-    bPos   = TRUE;
-    bEqual = TRUE;
-    for (s = 0; s < ms->nsim; s++)
-    {
-        bPos   = bPos && (buf[s] > 0);
-        bEqual = bEqual && (buf[s] == buf[0]);
-    }
-    if (bPos)
-    {
-        if (bEqual)
-        {
-            nmin = std::min(nmin, buf[0]);
-        }
-        else
-        {
-            /* Find the least common multiple */
-            for (d = 2; d < nmin; d++)
-            {
-                s = 0;
-                while (s < ms->nsim && d % buf[s] == 0)
-                {
-                    s++;
-                }
-                if (s == ms->nsim)
-                {
-                    /* We found the LCM and it is less than nmin */
-                    nmin = d;
-                    break;
-                }
-            }
-        }
-    }
-    sfree(buf);
-
-    return nmin;
-}
 
 static void calc_ke_part_normal(gmx::ArrayRef<const gmx::RVec> v,
                                 const t_grpopts*               opts,
@@ -483,11 +410,6 @@ void compute_globals(gmx_global_stat*               gstat,
         enerd->dvdl_lin[efptMASS] = static_cast<double>(dvdl_ekin);
 
         enerd->term[F_EKIN] = trace(ekind->ekin);
-
-        for (auto& dhdl : enerd->dhdlLambda)
-        {
-            dhdl += enerd->dvdl_lin[efptMASS];
-        }
     }
 
     /* ########## Now pressure ############## */
@@ -501,92 +423,6 @@ void compute_globals(gmx_global_stat*               gstat,
          */
 
         enerd->term[F_PRES] = calc_pres(fr->pbcType, ir->nwall, lastbox, ekind->ekin, total_vir, pres);
-    }
-}
-
-void setCurrentLambdasRerun(int64_t           step,
-                            const t_lambda*   fepvals,
-                            const t_trxframe* rerun_fr,
-                            const double*     lam0,
-                            t_state*          globalState)
-{
-    GMX_RELEASE_ASSERT(globalState != nullptr,
-                       "setCurrentLambdasGlobalRerun should be called with a valid state object");
-
-    if (rerun_fr->bLambda)
-    {
-        if (fepvals->delta_lambda == 0)
-        {
-            globalState->lambda[efptFEP] = rerun_fr->lambda;
-        }
-        else
-        {
-            /* find out between which two value of lambda we should be */
-            real frac      = step * fepvals->delta_lambda;
-            int  fep_state = static_cast<int>(std::floor(frac * fepvals->n_lambda));
-            /* interpolate between this state and the next */
-            /* this assumes that the initial lambda corresponds to lambda==0, which is verified in grompp */
-            frac = frac * fepvals->n_lambda - fep_state;
-            for (int i = 0; i < efptNR; i++)
-            {
-                globalState->lambda[i] =
-                        lam0[i] + (fepvals->all_lambda[i][fep_state])
-                        + frac * (fepvals->all_lambda[i][fep_state + 1] - fepvals->all_lambda[i][fep_state]);
-            }
-        }
-    }
-    else if (rerun_fr->bFepState)
-    {
-        globalState->fep_state = rerun_fr->fep_state;
-        for (int i = 0; i < efptNR; i++)
-        {
-            globalState->lambda[i] = fepvals->all_lambda[i][globalState->fep_state];
-        }
-    }
-}
-
-void setCurrentLambdasLocal(const int64_t       step,
-                            const t_lambda*     fepvals,
-                            const double*       lam0,
-                            gmx::ArrayRef<real> lambda,
-                            const int           currentFEPState)
-/* find the current lambdas.  If rerunning, we either read in a state, or a lambda value,
-   requiring different logic. */
-{
-    if (fepvals->delta_lambda != 0)
-    {
-        /* find out between which two value of lambda we should be */
-        real frac = step * fepvals->delta_lambda;
-        if (fepvals->n_lambda > 0)
-        {
-            int fep_state = static_cast<int>(std::floor(frac * fepvals->n_lambda));
-            /* interpolate between this state and the next */
-            /* this assumes that the initial lambda corresponds to lambda==0, which is verified in grompp */
-            frac = frac * fepvals->n_lambda - fep_state;
-            for (int i = 0; i < efptNR; i++)
-            {
-                lambda[i] = lam0[i] + (fepvals->all_lambda[i][fep_state])
-                            + frac * (fepvals->all_lambda[i][fep_state + 1] - fepvals->all_lambda[i][fep_state]);
-            }
-        }
-        else
-        {
-            for (int i = 0; i < efptNR; i++)
-            {
-                lambda[i] = lam0[i] + frac;
-            }
-        }
-    }
-    else
-    {
-        /* if < 0, fep_state was never defined, and we should not set lambda from the state */
-        if (currentFEPState > -1)
-        {
-            for (int i = 0; i < efptNR; i++)
-            {
-                lambda[i] = fepvals->all_lambda[i][currentFEPState];
-            }
-        }
     }
 }
 

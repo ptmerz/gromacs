@@ -43,11 +43,6 @@
 
 #include <memory>
 
-#include "gromacs/mdlib/vsite.h"
-#include "gromacs/utility/gmxassert.h"
-#include "gromacs/utility/mdmodulenotification.h"
-
-#include "replicaexchange.h"
 
 class energyhistory_t;
 struct gmx_ekindata_t;
@@ -60,28 +55,32 @@ struct gmx_wallcycle;
 struct gmx_walltime_accounting;
 struct ObservablesHistory;
 struct pull_t;
+struct ReplicaExchangeParameters;
 struct t_commrec;
-struct t_forcerec;
 struct t_filenm;
+struct t_forcerec;
 struct t_inputrec;
 struct t_nrnb;
-struct t_swap;
 class t_state;
+struct t_swap;
 
 namespace gmx
 {
-enum class StartingBehavior;
 class BoxDeformation;
 class Constraints;
-class MdrunScheduleWorkload;
-class MembedHolder;
 class IMDOutputProvider;
 class ImdSession;
-class MDLogger;
-class MDAtoms;
 class ISimulator;
-class StopHandlerBuilder;
+class MdrunScheduleWorkload;
+class MembedHolder;
+class MDAtoms;
+class MDLogger;
+struct MdModulesNotifier;
 struct MdrunOptions;
+class ReadCheckpointDataHolder;
+enum class StartingBehavior;
+class StopHandlerBuilder;
+class VirtualSitesHandler;
 
 struct SimulatorConfig
 {
@@ -241,7 +240,7 @@ public:
 class TopologyData
 {
 public:
-    TopologyData(gmx_mtop_t gmx_unused* globalTopology, MDAtoms gmx_unused* mdAtoms) :
+    TopologyData(gmx_mtop_t* globalTopology, MDAtoms* mdAtoms) :
         top_global(globalTopology),
         mdAtoms(mdAtoms)
     {
@@ -304,11 +303,7 @@ public:
         legacyInput_ = std::make_unique<LegacyInput>(legacyInput);
     }
 
-    void add(ReplicaExchangeParameters&& replicaExchangeParameters)
-    {
-        replicaExchangeParameters_ =
-                std::make_unique<ReplicaExchangeParameters>(replicaExchangeParameters);
-    }
+    void add(ReplicaExchangeParameters&& replicaExchangeParameters);
 
     void add(InteractiveMD&& interactiveMd)
     {
@@ -340,6 +335,9 @@ public:
         boxDeformation_ = std::make_unique<BoxDeformationHandle>(boxDeformation);
     }
 
+    //! Pass the read checkpoint data for modular simulator
+    void add(std::unique_ptr<ReadCheckpointDataHolder> modularSimulatorCheckpointData);
+
     /*! \brief Build a Simulator object based on input data
      *
      * Return a pointer to a simulation object. The use of a parameter
@@ -370,6 +368,8 @@ private:
     std::unique_ptr<IonSwapping>               ionSwapping_;
     std::unique_ptr<TopologyData>              topologyData_;
     std::unique_ptr<BoxDeformationHandle>      boxDeformation_;
+    //! Contains checkpointing data for the modular simulator
+    std::unique_ptr<ReadCheckpointDataHolder> modularSimulatorCheckpointData_;
 };
 
 } // namespace gmx

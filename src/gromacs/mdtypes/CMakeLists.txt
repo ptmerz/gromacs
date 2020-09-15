@@ -33,7 +33,10 @@
 # the research papers on the package. Check out http://www.gromacs.org.
 
 file(GLOB MDTYPES_SOURCES
+    checkpointdata.cpp
     df_history.cpp
+    energyhistory.cpp
+    forcebuffers.cpp
     group.cpp
     iforceprovider.cpp
     inputrec.cpp
@@ -42,7 +45,7 @@ file(GLOB MDTYPES_SOURCES
     observableshistory.cpp
     state.cpp)
 
-if(GMX_USE_CUDA OR GMX_USE_OPENCL)
+if(GMX_GPU)
     gmx_add_libgromacs_sources(
        state_propagator_data_gpu_impl_gpu.cpp
        )
@@ -52,6 +55,9 @@ else()
       )
 endif()
 
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${MDTYPES_SOURCES} PARENT_SCOPE)
 

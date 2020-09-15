@@ -1,7 +1,7 @@
 /*
  * This file is part of the GROMACS molecular simulation package.
  *
- * Copyright (c) 2019, by the GROMACS development team, led by
+ * Copyright (c) 2019,2020, by the GROMACS development team, led by
  * Mark Abraham, David van der Spoel, Berk Hess, and Erik Lindahl,
  * and including many others, as listed in the AUTHORS file in the
  * top-level source directory and at http://www.gromacs.org.
@@ -45,6 +45,7 @@
 
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/mdlib/mdoutf.h"
+#include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/state.h"
 
@@ -107,34 +108,34 @@ void CheckpointHelper::run(Step step, Time time)
     checkpointHandler_->setSignal(walltime_accounting_);
 }
 
-void CheckpointHelper::scheduleTask(Step step, Time time, const RegisterRunFunctionPtr& registerRunFunction)
+void CheckpointHelper::scheduleTask(Step step, Time time, const RegisterRunFunction& registerRunFunction)
 {
     // Only last step checkpointing is done here
     if (step != lastStep_ || !writeFinalCheckpoint_)
     {
         return;
     }
-    (*registerRunFunction)(std::make_unique<SimulatorRunFunction>(
-            [this, step, time]() { writeCheckpoint(step, time); }));
+    registerRunFunction([this, step, time]() { writeCheckpoint(step, time); });
 }
 
 void CheckpointHelper::writeCheckpoint(Step step, Time time)
 {
     localStateInstance_->flags = 0;
+
+    WriteCheckpointDataHolder checkpointDataHolder;
     for (const auto& client : clients_)
     {
         client->writeCheckpoint(localStateInstance_, state_global_);
     }
 
     mdoutf_write_to_trajectory_files(fplog_, cr_, trajectoryElement_->outf_, MDOF_CPT,
-                                     globalNumAtoms_, step, time, localStateInstance_,
-                                     state_global_, observablesHistory_, ArrayRef<RVec>());
+                                     globalNumAtoms_, step, time, localStateInstance_, state_global_,
+                                     observablesHistory_, ArrayRef<RVec>(), &checkpointDataHolder);
 }
 
-SignallerCallbackPtr CheckpointHelper::registerLastStepCallback()
+std::optional<SignallerCallback> CheckpointHelper::registerLastStepCallback()
 {
-    return std::make_unique<SignallerCallback>(
-            [this](Step step, Time gmx_unused time) { this->lastStep_ = step; });
+    return [this](Step step, Time gmx_unused time) { this->lastStep_ = step; };
 }
 
 } // namespace gmx
