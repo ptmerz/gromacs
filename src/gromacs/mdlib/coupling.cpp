@@ -978,13 +978,17 @@ void crescale_pcoupl(FILE*             fplog,
     rng.restart(step, 0);
     real vol = 1.0;
     for (d = 0; d < DIM; d++)
+    {
         vol *= box[d][d];
+    }
     real gauss;
     real gauss2;
     real kt;
     kt = ir->opts.ref_t[0] * BOLTZ;
     if (kt < 0.0)
+    {
         kt = 0.0;
+    }
 
     switch (ir->epct)
     {
@@ -1892,7 +1896,7 @@ real NPT_energy(const t_inputrec* ir, const t_state* state, const t_extmass* Mas
                     energyNPT += energyPressureMTTK(ir, state, MassQ);
                 }
                 break;
-            case epcBERENDSEN: energyNPT += state->baros_integral; break;
+            case epcBERENDSEN:
             case epcCRESCALE: energyNPT += state->baros_integral; break;
             default:
                 GMX_RELEASE_ASSERT(
