@@ -74,7 +74,6 @@
 #include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/invertmatrix.h"
-#include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/checkpointhandler.h"
